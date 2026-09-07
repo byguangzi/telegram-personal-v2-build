@@ -1,0 +1,2 @@
+# Integrity hashes cover exact bytes, including PowerShell BOM and CRLF.
+* -text

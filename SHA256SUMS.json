@@ -1,4 +1,5 @@
 {
+  ".gitattributes": "7603dede85e9e465234b096b44492a28d3454c2005e4dada1c26a5419e4b77a0",
   ".github/workflows/build-v22.yml": "36a048e0f95d4a68f166f00ad83bcfa3ec532defd6c385108b9311fdbe452c7f",
   "0_离线预检.bat": "d88bc36a70184294cad8004152e2a22e21b4a67fddbd55404c83d0ab93ad488d",
   "1_首次配置并构建.bat": "4cc10b81a0540c6c6f584025aaecf6cb9e1089dbff2c5a9fa143d23e1e140829",
@@ -12,13 +13,14 @@
   "kit.json": "2d7489d85d5a3d1e64ca89e52ef28d95b1915e3ec4186f854a145a498410de8f",
   "LEGAL": "7f621fe813c7f7f10debe63b81a4d4a04d82771b625490077a44cc83adac23ab",
   "LICENSE": "d2d7cddf73207e9e8c5c949878bd2b90f1c1c05668d461fdc373435a0f684867",
-  "scripts/build-assistant.ps1": "2804622098f3394673717bc770727238c46df662a6c5aa582b951f0b6579da4a",
+  "scripts/build-assistant.ps1": "df81e13ca0f62ba0c0c5fde5cdfa4fa02575b4350caccca15b382c31ede046fb",
   "scripts/runtime-check.ps1": "2a33ce5bf39de177fdd5a12c923e792c00d2511488639b996fe60132b144b2b8",
   "scripts/verify-kit.ps1": "d83ff00941aa98a4b3b6ca6edf4e25ed2e47af1c8b84a4323c9dfba4f11a105a",
   "source-baseline.zip": "72917145c976afb7b6ac20205f7b032242bf54e4d912d093e6be6913ab99efdd",
   "tdesktop-7.2.5-personal-v2.2.patch": "bec0e95abb4cbbeb8d79fe2c1c3f6f52f8c9876d459deef1c77592e4d8e06ddd",
   "tests/policy_test.cpp": "e1375203bfd24dbc33fa3d0646b7b77db5cc36ca0c3f45cbb3fca3764e91e55f",
   "tests/test_generator.py": "0d960e1ce02a71c693efde9283dd17c9b07caec8f6676700d32170f85bec6669",
-  "upload-files.json": "e9a99a7cf1d9bbcc952f835dbb83ba60b8d782e0cc8e7b4252a3de6b13971852",
-  "先看这里.txt": "5661529d4d13b8f2b410f996f6367d75aa17393cffb20a727dc4edc425976645"
+  "upload-files.json": "0b5ce06127bdac57754e9c387aab885df90e77b23a57629c0746a06af2613468",
+  "先看这里.txt": "df443900d33b149bf9b8286fc0703e78d5d043070fa3d55ae030f6e117a30c3a",
+  "审计与验证报告.md": "eaa4ea99e94e7a52749f07abe734c9af0ad0aff553bdc5c013a1aeabe3fde79f"
 }

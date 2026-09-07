@@ -1,4 +1,5 @@
 [
+  ".gitattributes",
   ".github/workflows/build-v22.yml",
   "kit.json",
   "upload-files.json",
