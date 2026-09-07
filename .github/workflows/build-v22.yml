@@ -73,6 +73,17 @@ jobs:
           arch: x64
           sdk: ${{ env.SDK }}
           toolset: '14.44'
+      - name: Ensure matching MSVC 14.44 ATL component
+        timeout-minutes: 20
+        run: '& "$env:GITHUB_WORKSPACE\ci\ensure-atl.ps1"'
+      - name: Refresh x64 compiler environment after ATL setup
+        uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: '14.44'
+      - name: Verify ATL before lengthy dependency compilation
+        run: '& "$env:GITHUB_WORKSPACE\ci\ensure-atl.ps1" -VerifyOnly'
       - name: Compile and run connection policy regression tests
         run: |
           $include = "$env:TBUILD\tdesktop\Telegram\SourceFiles"
