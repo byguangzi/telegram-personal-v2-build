@@ -1,0 +1,249 @@
+name: Build Telegram Personal V2 x64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_VERSION: 7.2.5
+  SOURCE_COMMIT: 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955
+
+jobs:
+  build:
+    name: Windows x64 Release
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    defaults:
+      run:
+        shell: cmd
+
+    steps:
+      - name: Checkout private build kit
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Prepare short build path
+        run: |
+          mkdir "%USERPROFILE%\TBuild\Libraries"
+          mklink /d "%GITHUB_WORKSPACE%\TBuild" "%USERPROFILE%\TBuild"
+          echo TBUILD=%GITHUB_WORKSPACE%\TBuild>>%GITHUB_ENV%
+          echo LibrariesPath=%GITHUB_WORKSPACE%\TBuild\Libraries\win64>>%GITHUB_ENV%
+
+      - name: Checkout audited Telegram Desktop source
+        uses: actions/checkout@v7
+        with:
+          repository: telegramdesktop/tdesktop
+          ref: ${{ env.SOURCE_COMMIT }}
+          submodules: recursive
+          path: TBuild/tdesktop
+          persist-credentials: false
+
+      - name: Verify source version and apply V2 patch
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:TBUILD 'tdesktop'
+          $actualCommit = (git -C $source rev-parse HEAD).Trim()
+          if ($actualCommit -ne $env:SOURCE_COMMIT) {
+            throw "Unexpected source commit: $actualCommit"
+          }
+          $versionFile = Join-Path $source 'Telegram\SourceFiles\core\version.h'
+          if ((Get-Content -Raw $versionFile) -notmatch 'AppVersionStr = "7\.2\.5"') {
+            throw 'Pinned source does not identify itself as Telegram Desktop 7.2.5.'
+          }
+
+          $patch = Join-Path $env:GITHUB_WORKSPACE 'tdesktop-7.2.5-personal-v2.patch'
+          git -C $source apply --check $patch
+          if ($LASTEXITCODE -ne 0) { throw 'V2 patch preflight failed.' }
+          git -C $source apply $patch
+          if ($LASTEXITCODE -ne 0) { throw 'V2 patch application failed.' }
+          git -C $source add -N Telegram/SourceFiles/core/preconfigured_proxy_config.h
+          git -C $source diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Patch formatting check failed.' }
+
+          $expected = @(
+            'Telegram/SourceFiles/boxes/connection_box.cpp',
+            'Telegram/SourceFiles/core/core_settings_proxy.cpp',
+            'Telegram/SourceFiles/core/core_settings_proxy.h',
+            'Telegram/SourceFiles/core/launcher.cpp',
+            'Telegram/SourceFiles/core/preconfigured_proxy_config.h',
+            'Telegram/SourceFiles/core/proxy_rotation_manager.cpp'
+          ) | Sort-Object
+          $changed = @(git -C $source diff --name-only) | Sort-Object
+          $unexpected = Compare-Object $expected $changed
+          if ($unexpected) {
+            $unexpected | Format-Table | Out-String | Write-Host
+            throw 'Patch changed an unexpected file set.'
+          }
+
+      - name: Generate private MTProto header
+        shell: pwsh
+        env:
+          PRECONFIGURED_PROXY_HOST: ${{ secrets.PRECONFIGURED_PROXY_HOST }}
+          PRECONFIGURED_PROXY_PORT: ${{ secrets.PRECONFIGURED_PROXY_PORT }}
+          PRECONFIGURED_PROXY_SECRET: ${{ secrets.PRECONFIGURED_PROXY_SECRET }}
+        run: |
+          $output = Join-Path $env:TBUILD 'tdesktop\Telegram\SourceFiles\core\preconfigured_proxy_config.h'
+          python "$env:GITHUB_WORKSPACE\generate_preconfigured_proxy_config.py" --output $output
+          if ($LASTEXITCODE -ne 0) { throw 'MTProto configuration generation failed.' }
+          $generated = Get-Content -Raw $output
+          if ($generated -match 'kPort = 0') { throw 'Generated proxy header still contains placeholder values.' }
+          git -C "$env:TBUILD\tdesktop" diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'Generated header formatting check failed.' }
+
+      - name: Validate Telegram API credentials
+        shell: pwsh
+        env:
+          TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
+          TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+        run: |
+          if ($env:TDESKTOP_API_ID -notmatch '^\d+$') {
+            throw 'TDESKTOP_API_ID is missing or invalid.'
+          }
+          if ($env:TDESKTOP_API_HASH -notmatch '^[0-9a-fA-F]{32}$') {
+            throw 'TDESKTOP_API_HASH is missing or invalid.'
+          }
+
+      - name: Prepare official build metadata
+        shell: bash
+        run: |
+          DOCPATH="$TBUILD/tdesktop/docs/building-win.md"
+          SDK="$(grep "SDK version" "$DOCPATH" | sed -r 's/.*\*\*(.*)\*\* SDK version.*/\1/')"
+          echo "SDK=$SDK" >> "$GITHUB_ENV"
+          sha256sum "$TBUILD/tdesktop/Telegram/build/prepare/prepare.py" > CACHE_KEY.txt
+          echo "$SDK" >> CACHE_KEY.txt
+          echo "CACHE_KEY=$(sha256sum CACHE_KEY.txt | awk '{ print $1 }')" >> "$GITHUB_ENV"
+
+      - name: Native Tools Command Prompt
+        uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: 14.44
+
+      - name: Configure NuGet sources
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+
+      - name: Restore ThirdParty cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: ${{ runner.os }}-${{ runner.arch }}-third-party-v2-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-third-party-v2-
+
+      - name: Restore Windows x64 libraries cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-x64-release-libs-v2-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.os }}-x64-release-libs-v2-
+
+      - name: Restore Qt cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: ${{ runner.os }}-x64-release-qt-v2-${{ env.CACHE_KEY }}
+          restore-keys: ${{ runner.os }}-x64-release-qt-v2-
+
+      - name: Prepare official Telegram libraries including Release
+        run: call "%TBUILD%\tdesktop\Telegram\build\prepare\win.bat" silent
+
+      - name: Free disk space after library preparation
+        shell: bash
+        run: find "$LibrariesPath" '(' '(' ! '(' -name '*.lib' -o -name '*.a' -o -name '*.exe' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -path '*/nv-codec-headers/*' ')' -type f ')' -o -empty ')' -delete
+
+      - name: Configure and build Telegram.exe Release
+        env:
+          TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
+          TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+        run: |
+          if not defined TDESKTOP_API_ID exit /b 1
+          if not defined TDESKTOP_API_HASH exit /b 1
+          cd /d "%TBUILD%\tdesktop\Telegram"
+          call configure.bat ^
+          x64 ^
+          -D TDESKTOP_API_ID=%TDESKTOP_API_ID% ^
+          -D TDESKTOP_API_HASH=%TDESKTOP_API_HASH% ^
+          -D CMAKE_CONFIGURATION_TYPES=Release ^
+          -D CMAKE_COMPILE_WARNING_AS_ERROR=ON ^
+          -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON ^
+          -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
+
+          cmake --build ..\out --config Release --target Telegram --parallel 2
+
+      - name: Stage result, size check and SHA-256
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:TBUILD 'tdesktop'
+          $exe = Join-Path $source 'out\Release\Telegram.exe'
+          if (-not (Test-Path $exe)) { throw 'Release Telegram.exe was not produced.' }
+
+          $artifact = Join-Path $env:GITHUB_WORKSPACE 'artifact'
+          New-Item -ItemType Directory -Force -Path $artifact | Out-Null
+          Copy-Item $exe (Join-Path $artifact 'Telegram.exe')
+          Copy-Item (Join-Path $source 'LICENSE') (Join-Path $artifact 'LICENSE')
+
+          $sizeBytes = (Get-Item $exe).Length
+          $sizeMb = [Math]::Round($sizeBytes / 1MB, 1)
+          Write-Host "Telegram.exe Release size: $sizeMb MB"
+          if ($sizeMb -gt 150) {
+            Write-Warning "Release Telegram.exe is larger than 150 MB. Build succeeded, but size should be reviewed."
+          }
+
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Encoding utf8NoBOM -Path (Join-Path $artifact 'Telegram.exe.sha256') -Value "$hash  Telegram.exe"
+          @(
+            'Telegram Personal V2',
+            'Upstream displayed version: 7.2.5',
+            "Pinned upstream commit: $env:SOURCE_COMMIT",
+            'Architecture: Windows x64',
+            'Configuration: Release',
+            "Telegram.exe size: $sizeMb MB",
+            'Data mode: always uses tdata beside Telegram.exe',
+            'TelegramForcePortable folder: not required',
+            'Built-in proxy: MTProto, hidden from normal proxy list',
+            'Startup policy: built-in MTProto is forced on each launch',
+            'Fallback policy: after 10 seconds without an account connection, switch to direct for that session',
+            'Next launch: retry built-in MTProto again',
+            'Runtime state file: tdata/personal_proxy_state.txt (contains status only; no host/port/secret)',
+            'Auto-update: disabled to prevent replacing the customized executable',
+            'Crash reports: disabled',
+            'Credential/chat collection added by this patch: no',
+            'Code signature: unsigned private build',
+            "Telegram.exe SHA-256: $hash"
+          ) | Set-Content -Encoding utf8NoBOM -Path (Join-Path $artifact 'BUILD_INFO.txt')
+          @(
+            '最终使用时，请把 Telegram.exe 放到你自己的 tdata 文件夹旁边。',
+            '',
+            '最终目录应为：',
+            'Telegram.exe',
+            'tdata\\',
+            '',
+            '不要上传、发送或覆盖你唯一的一份 tdata。首次测试必须使用 tdata 副本。',
+            'tdata\\personal_proxy_state.txt 状态：',
+            'trying_mtproto = 正在优先尝试内置 MTProto',
+            'mtproto_connected = 内置 MTProto 已成功建立 Telegram 连接',
+            'fallback_direct = 10 秒内未连接，已自动回退直连',
+            '',
+            '节点 HOST / PORT / SECRET 不会写入这个状态文件。'
+          ) | Set-Content -Encoding utf8NoBOM -Path (Join-Path $artifact '使用说明.txt')
+
+      - name: Upload Telegram Personal V2
+        uses: actions/upload-artifact@v7
+        with:
+          name: Telegram-Personal-v2
+          path: artifact/
+          retention-days: 7
+          if-no-files-found: error
