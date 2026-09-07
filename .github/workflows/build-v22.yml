@@ -1,0 +1,143 @@
+name: Telegram Personal V2.2 x64 Release
+run-name: V2.2 ${{ inputs.request_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Build helper request identifier
+        type: string
+        required: true
+      kit_commit:
+        description: Exact uploaded build kit commit
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: telegram-personal-v22
+  cancel-in-progress: false
+env:
+  SOURCE_COMMIT: 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955
+  SOURCE_VERSION: 7.2.5
+jobs:
+  build:
+    name: Windows x64 Release
+    runs-on: windows-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout V2.2 build kit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify request and prepare build directory
+        env:
+          REQUEST_COMMIT: ${{ inputs.kit_commit }}
+        run: |
+          if ($env:REQUEST_COMMIT -ne $env:GITHUB_SHA) { throw 'Build kit commit changed; rerun the helper.' }
+          git config --global core.autocrlf false
+          git config --global user.name 'Telegram Personal Build'
+          git config --global user.email 'build@localhost'
+          $buildPath = Join-Path $env:USERPROFILE 'TBuild'
+          New-Item -ItemType Directory -Force -Path "$buildPath\Libraries" | Out-Null
+          New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\TBuild" -Target $buildPath | Out-Null
+          "TBUILD=$env:GITHUB_WORKSPACE\TBuild" >> $env:GITHUB_ENV
+          "LibrariesPath=$env:GITHUB_WORKSPACE\TBuild\Libraries\win64" >> $env:GITHUB_ENV
+      - name: Checkout exact official Telegram source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: telegramdesktop/tdesktop
+          ref: 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955
+          submodules: recursive
+          path: TBuild/tdesktop
+          persist-credentials: false
+      - name: Verify pinned source and apply V2.2 patch
+        run: |
+          & "$env:GITHUB_WORKSPACE\scripts\verify-kit.ps1" -Cloud -Source "$env:TBUILD\tdesktop" | Out-Null
+          $version = Get-Content "$env:TBUILD\tdesktop\Telegram\SourceFiles\core\version.h" -Raw
+          if ($version -notmatch 'AppVersionStr = "7\.2\.5"') { throw 'Version mismatch.' }
+          python -m unittest discover -s "$env:GITHUB_WORKSPACE\tests" -p test_generator.py
+          if ($LASTEXITCODE -ne 0) { throw 'Secret parser regression tests failed.' }
+      - name: Prepare official build metadata
+        run: |
+          $doc = Get-Content "$env:TBUILD\tdesktop\docs\building-win.md" -Raw
+          if ($doc -notmatch '\*\*([0-9.]+)\*\* SDK version') { throw 'Cannot determine pinned SDK.' }
+          "SDK=$($Matches[1])" >> $env:GITHUB_ENV
+          $key = (Get-FileHash "$env:TBUILD\tdesktop\Telegram\build\prepare\prepare.py").Hash
+          "CACHE_KEY=$key" >> $env:GITHUB_ENV
+      - name: Initialize x64 MSVC 14.44
+        uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: '14.44'
+      - name: Compile and run connection policy regression tests
+        run: |
+          $include = "$env:TBUILD\tdesktop\Telegram\SourceFiles"
+          cl /nologo /std:c++17 /EHsc /W4 /WX /I $include "$env:GITHUB_WORKSPACE\tests\policy_test.cpp" /Fe:"$env:RUNNER_TEMP\policy_test.exe" /Fo:"$env:RUNNER_TEMP\policy_test.obj"
+          if ($LASTEXITCODE -ne 0) { throw 'Policy test compilation failed.' }
+          & "$env:RUNNER_TEMP\policy_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Policy test failed.' }
+      - name: Configure NuGet
+        shell: cmd
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+      - name: Restore third party cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ env.TBUILD }}\ThirdParty
+          key: win-x64-v22-thirdparty-${{ env.SDK }}-${{ env.CACHE_KEY }}
+      - name: Restore library cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\*
+            !${{ env.LibrariesPath }}\cache_keys
+            !${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\*
+            !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: win-x64-v22-libs-${{ env.SDK }}-${{ env.CACHE_KEY }}
+      - name: Restore Qt cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ${{ env.LibrariesPath }}\[qQ]t[_-]*
+            ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
+          key: win-x64-v22-qt-${{ env.SDK }}-${{ env.CACHE_KEY }}
+      - name: Prepare official libraries with Release enabled
+        shell: cmd
+        run: |
+          call "%TBUILD%\tdesktop\Telegram\build\prepare\win.bat" silent
+          if errorlevel 1 exit /b 1
+      - name: Generate private runtime configuration
+        env:
+          PRECONFIGURED_PROXY_HOST: ${{ secrets.PRECONFIGURED_PROXY_HOST }}
+          PRECONFIGURED_PROXY_PORT: ${{ secrets.PRECONFIGURED_PROXY_PORT }}
+          PRECONFIGURED_PROXY_SECRET: ${{ secrets.PRECONFIGURED_PROXY_SECRET }}
+        run: |
+          python "$env:GITHUB_WORKSPACE\ci\generate_proxy.py" --output "$env:TBUILD\tdesktop\Telegram\SourceFiles\core\preconfigured_proxy_config.h"
+          if ($LASTEXITCODE -ne 0) { throw 'Private configuration validation failed.' }
+      - name: Configure and compile Release with redacted output
+        env:
+          TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
+          TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+          PRECONFIGURED_PROXY_HOST: ${{ secrets.PRECONFIGURED_PROXY_HOST }}
+          PRECONFIGURED_PROXY_PORT: ${{ secrets.PRECONFIGURED_PROXY_PORT }}
+          PRECONFIGURED_PROXY_SECRET: ${{ secrets.PRECONFIGURED_PROXY_SECRET }}
+        run: |
+          python "$env:GITHUB_WORKSPACE\ci\build.py"
+          if ($LASTEXITCODE -ne 0) { throw 'Release build failed; actual redacted logs are above.' }
+      - name: Verify binary architecture, dependencies, size and SHA-256
+        run: |
+          python "$env:GITHUB_WORKSPACE\ci\stage.py"
+          if ($LASTEXITCODE -ne 0) { throw 'Release artifact verification failed.' }
+      - name: Upload verified V2.2 artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Telegram-Personal-v2.2
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 7

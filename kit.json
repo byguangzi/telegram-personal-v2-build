@@ -1,0 +1,40 @@
+{
+  "version": "2.2",
+  "source_version": "7.2.5",
+  "source_commit": "96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955",
+  "source_tree": "7456c47cb2c5491ece95494bd7bc150be9ded1d9",
+  "repository": "byguangzi/telegram-personal-v2-build",
+  "workflow": "build-v22.yml",
+  "artifact": "Telegram-Personal-v2.2",
+  "changed_files": [
+    "Telegram/SourceFiles/boxes/connection_box.cpp",
+    "Telegram/SourceFiles/core/application.cpp",
+    "Telegram/SourceFiles/core/application.h",
+    "Telegram/SourceFiles/core/core_settings_proxy.cpp",
+    "Telegram/SourceFiles/core/core_settings_proxy.h",
+    "Telegram/SourceFiles/core/launcher.cpp",
+    "Telegram/SourceFiles/core/personal_proxy_policy.h",
+    "Telegram/SourceFiles/core/preconfigured_proxy_config.h",
+    "Telegram/SourceFiles/core/proxy_rotation_manager.cpp",
+    "Telegram/SourceFiles/core/proxy_rotation_manager.h",
+    "Telegram/SourceFiles/logs.cpp",
+    "Telegram/SourceFiles/main/main_account.h"
+  ],
+  "new_files": [
+    "Telegram/SourceFiles/core/personal_proxy_policy.h",
+    "Telegram/SourceFiles/core/preconfigured_proxy_config.h"
+  ],
+  "baseline_blobs": {
+    "Telegram/SourceFiles/boxes/connection_box.cpp": "104c6ae353546d6c1cd40b37b8719d6946f5d39a",
+    "Telegram/SourceFiles/core/application.cpp": "4528f5955b1e567b7c17d4792a080f74a9c2f857",
+    "Telegram/SourceFiles/core/application.h": "ada2cf5f1a02a19941c908334d2f4fb22e013165",
+    "Telegram/SourceFiles/core/core_settings_proxy.cpp": "18e7ab8ce60865409dbaff267ee192e272622d26",
+    "Telegram/SourceFiles/core/core_settings_proxy.h": "1f2ec5c516e03ae49e80c15bb6083bffa7ec6d99",
+    "Telegram/SourceFiles/core/launcher.cpp": "527133e65d4ecdaf904c1b3ab39f82e443da4b30",
+    "Telegram/SourceFiles/core/proxy_rotation_manager.cpp": "72723d4db408be654dbf68e1ac40bba21c59d4e6",
+    "Telegram/SourceFiles/core/proxy_rotation_manager.h": "c1fee276961c4f98e21ab2a8e495a1d687672804",
+    "Telegram/SourceFiles/logs.cpp": "451ee22c87d5dd723dbcc141f792dde39740c231",
+    "Telegram/SourceFiles/main/main_account.h": "eb05f1b40489aea6278eb8225006023af6c73cea"
+  },
+  "patch_sha256": "bec0e95abb4cbbeb8d79fe2c1c3f6f52f8c9876d459deef1c77592e4d8e06ddd"
+}

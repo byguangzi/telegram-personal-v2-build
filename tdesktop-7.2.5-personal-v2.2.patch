@@ -1,0 +1,574 @@
+diff --git a/Telegram/SourceFiles/boxes/connection_box.cpp b/Telegram/SourceFiles/boxes/connection_box.cpp
+index 104c6ae353546d6c1cd40b37b8719d6946f5d39a..f425adea3a01cad020de318a4106e987a00cc47c 100644
+--- a/Telegram/SourceFiles/boxes/connection_box.cpp
++++ b/Telegram/SourceFiles/boxes/connection_box.cpp
+@@ -2195,10 +2195,9 @@ void ProxiesBoxController::refreshChecker(Item &item) {
+ object_ptr<Ui::BoxContent> ProxiesBoxController::CreateOwningBox(
+ 		not_null<Main::Account*> account,
+ 		const QString &highlightId) {
+-	auto controller = std::make_unique<ProxiesBoxController>(account);
+-	auto box = controller->create(highlightId);
+-	Ui::AttachAsChild(box, std::move(controller));
+-	return box;
++	Q_UNUSED(account);
++	Q_UNUSED(highlightId);
++	return Ui::MakeInformBox(u"此版本自动管理连接：启动时尝试内置 MTProto；连续 30 秒未连接则本次运行改用直连，下次启动重试。节点不显示，也不会保存为普通代理。"_q);
+ }
+ 
+ object_ptr<Ui::BoxContent> ProxiesBoxController::create(
+diff --git a/Telegram/SourceFiles/core/application.cpp b/Telegram/SourceFiles/core/application.cpp
+index 4528f5955b1e567b7c17d4792a080f74a9c2f857..32391aef33cd1b74996bfb6478a1621ffbb8c5bf 100644
+--- a/Telegram/SourceFiles/core/application.cpp
++++ b/Telegram/SourceFiles/core/application.cpp
+@@ -891,16 +891,21 @@ void Application::constructFallbackProductionConfig(
+ void Application::setCurrentProxy(
+ 		const MTP::ProxyData &proxy,
+ 		MTP::ProxyData::Settings settings) {
+-	auto &my = _private->settings.proxy();
+-	const auto current = [&] {
+-		return my.isEnabled() ? my.selected() : MTP::ProxyData();
+-	};
+-	const auto was = current();
+-	my.setSelected(proxy);
+-	my.setSettings(settings);
+-	const auto now = current();
++	// This build has one fixed policy. UI/deep links cannot restart the
++	// hidden proxy or override the per-process direct fallback latch.
++	Q_UNUSED(proxy);
++	Q_UNUSED(settings);
++}
++
++void Application::fallbackPersonalProxy() {
++	auto &my = settings().proxy();
++	if (my.personalFallback()) {
++		return;
++	}
++	const auto was = my.selected();
++	my.fallbackPersonalProxy();
+ 	refreshGlobalProxy();
+-	_proxyChanges.fire({ was, now });
++	_proxyChanges.fire({ was, MTP::ProxyData() });
+ 	my.connectionTypeChangesNotify();
+ 	proxyRotationSettingsChanged();
+ }
+@@ -920,19 +925,7 @@ auto Application::proxyChanges() const -> rpl::producer<ProxyChange> {
+ }
+ 
+ void Application::badMtprotoConfigurationError() {
+-	if (settings().proxy().isEnabled() && !_badProxyDisableBox) {
+-		const auto disableCallback = [=] {
+-			setCurrentProxy(
+-				settings().proxy().selected(),
+-				MTP::ProxyData::Settings::System);
+-		};
+-		_badProxyDisableBox = Ui::show(
+-			Ui::MakeInformBox(Lang::Hard::ProxyConfigError()));
+-		_badProxyDisableBox->boxClosing(
+-		) | rpl::on_next(
+-			disableCallback,
+-			_badProxyDisableBox->lifetime());
+-	}
++	fallbackPersonalProxy();
+ }
+ 
+ void Application::startLocalStorage() {
+diff --git a/Telegram/SourceFiles/core/application.h b/Telegram/SourceFiles/core/application.h
+index ada2cf5f1a02a19941c908334d2f4fb22e013165..4432c85bdb7a97ff0b8eb687ae4b829fa869e38d 100644
+--- a/Telegram/SourceFiles/core/application.h
++++ b/Telegram/SourceFiles/core/application.h
+@@ -235,6 +235,7 @@ public:
+ 	void setCurrentProxy(
+ 		const MTP::ProxyData &proxy,
+ 		MTP::ProxyData::Settings settings);
++	void fallbackPersonalProxy();
+ 	void proxyRotationSettingsChanged();
+ 	void checkProxyRotation(not_null<Main::Account*> account, int32 state);
+ 	[[nodiscard]] rpl::producer<ProxyChange> proxyChanges() const;
+diff --git a/Telegram/SourceFiles/core/core_settings_proxy.cpp b/Telegram/SourceFiles/core/core_settings_proxy.cpp
+index 18e7ab8ce60865409dbaff267ee192e272622d26..0455373d6c178dfe7dd993250e9750e9f872d549 100644
+--- a/Telegram/SourceFiles/core/core_settings_proxy.cpp
++++ b/Telegram/SourceFiles/core/core_settings_proxy.cpp
+@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
+ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "core/core_settings_proxy.h"
++#include "core/preconfigured_proxy_config.h"
+ 
+ #include "base/platform/base_platform_info.h"
+ #include "storage/serialize_common.h"
+@@ -112,13 +113,34 @@ std::vector<int> NormalizeProxyRotationPreferredIndices(
+ 
+ SettingsProxy::SettingsProxy()
+ : _tryIPv6(!Platform::IsWindows()) {
++	static_assert(PreconfiguredProxyConfig::kPort > 0);
++	static_assert(PreconfiguredProxyConfig::kPort <= 65535);
++	_personalProxy.type = MTP::ProxyData::Type::Mtproto;
++	_personalProxy.host = QString::fromUtf8(QByteArray::fromBase64(
++		PreconfiguredProxyConfig::kHostBase64));
++	_personalProxy.port = PreconfiguredProxyConfig::kPort;
++	_personalProxy.password = QString::fromUtf8(QByteArray::fromBase64(
++		PreconfiguredProxyConfig::kSecretBase64));
++	Assert(_personalProxy.valid());
+ }
+ 
+ QByteArray SettingsProxy::serialize() const {
+-	const auto serializedSelected = SerializeProxyData(_selected);
+-	const auto serializedList = ranges::views::all(
+-		_list
+-	) | ranges::views::transform(SerializeProxyData) | ranges::to_vector;
++	const auto serializedSelected = SerializeProxyData(
++		isPersonalProxy(_selected) ? MTP::ProxyData() : _selected);
++	auto serializedList = std::vector<QByteArray>();
++	auto indices = std::vector<int>(_list.size(), -1);
++	for (auto i = 0; i != int(_list.size()); ++i) {
++		if (!isPersonalProxy(_list[i])) {
++			indices[i] = int(serializedList.size());
++			serializedList.push_back(SerializeProxyData(_list[i]));
++		}
++	}
++	auto preferred = std::vector<int>();
++	for (const auto index : _proxyRotationPreferredIndices) {
++		if (index >= 0 && index < int(indices.size()) && indices[index] >= 0) {
++			preferred.push_back(indices[index]);
++		}
++	}
+ 
+ 	const auto size = 3 * sizeof(qint32)
+ 		+ Serialize::bytearraySize(serializedSelected)
+@@ -128,14 +150,15 @@ QByteArray SettingsProxy::serialize() const {
+ 			0,
+ 			ranges::plus(),
+ 			&Serialize::bytearraySize)
+-		+ (4 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
++		+ (4 + int(preferred.size())) * sizeof(qint32);
+ 	auto stream = Serialize::ByteArrayWriter(size);
+ 	stream
+ 		<< qint32(_tryIPv6 ? 1 : 0)
+ 		<< qint32(_useProxyForCalls ? 1 : 0)
+-		<< ProxySettingsToInt(_settings)
++		<< ProxySettingsToInt(isPersonalProxy(_selected)
++			? MTP::ProxyData::Settings::Disabled : _settings)
+ 		<< serializedSelected
+-		<< qint32(_list.size());
++		<< qint32(serializedList.size());
+ 	for (const auto &i : serializedList) {
+ 		stream << i;
+ 	}
+@@ -143,8 +166,8 @@ QByteArray SettingsProxy::serialize() const {
+ 		<< qint32(_checkIpWarningShown ? 1 : 0)
+ 		<< qint32(_proxyRotationEnabled ? 1 : 0)
+ 		<< qint32(_proxyRotationTimeout)
+-		<< qint32(_proxyRotationPreferredIndices.size());
+-	for (const auto index : _proxyRotationPreferredIndices) {
++		<< qint32(preferred.size());
++	for (const auto index : preferred) {
+ 		stream << qint32(index);
+ 	}
+ 	return std::move(stream).result();
+@@ -252,16 +275,20 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
+ 	return true;
+ }
+ 
++bool SettingsProxy::isPersonalProxy(const MTP::ProxyData &proxy) const {
++	return proxy == _personalProxy;
++}
++
+ bool SettingsProxy::isEnabled() const {
+-	return _settings == MTP::ProxyData::Settings::Enabled;
++	return !_personalFallback;
+ }
+ 
+ bool SettingsProxy::isSystem() const {
+-	return _settings == MTP::ProxyData::Settings::System;
++	return false;
+ }
+ 
+ bool SettingsProxy::isDisabled() const {
+-	return _settings == MTP::ProxyData::Settings::Disabled;
++	return _personalFallback;
+ }
+ 
+ bool SettingsProxy::checkIpWarningShown() const {
+@@ -315,7 +342,7 @@ void SettingsProxy::setUseProxyForCalls(bool value) {
+ }
+ 
+ bool SettingsProxy::proxyRotationEnabled() const {
+-	return _proxyRotationEnabled;
++	return false;
+ }
+ 
+ void SettingsProxy::setProxyRotationEnabled(bool value) {
+@@ -333,7 +360,9 @@ void SettingsProxy::setProxyRotationTimeout(int value) {
+ }
+ 
+ MTP::ProxyData::Settings SettingsProxy::settings() const {
+-	return _settings;
++	return _personalFallback
++		? MTP::ProxyData::Settings::Disabled
++		: MTP::ProxyData::Settings::Enabled;
+ }
+ 
+ void SettingsProxy::setSettings(MTP::ProxyData::Settings value) {
+@@ -341,11 +370,16 @@ void SettingsProxy::setSettings(MTP::ProxyData::Settings value) {
+ }
+ 
+ MTP::ProxyData SettingsProxy::selected() const {
+-	return _selected;
++	return _personalFallback ? MTP::ProxyData() : _personalProxy;
+ }
+ 
+ void SettingsProxy::setSelected(MTP::ProxyData value) {
+-	_selected = value;
++	if (isPersonalProxy(value)) {
++		// DNS resolution updates belong only to the runtime proxy.
++		_personalProxy = std::move(value);
++	} else {
++		_selected = std::move(value);
++	}
+ }
+ 
+ const std::vector<MTP::ProxyData> &SettingsProxy::list() const {
+diff --git a/Telegram/SourceFiles/core/core_settings_proxy.h b/Telegram/SourceFiles/core/core_settings_proxy.h
+index 1f2ec5c516e03ae49e80c15bb6083bffa7ec6d99..b53a50431708f077aeb010468e51133b7489ff0c 100644
+--- a/Telegram/SourceFiles/core/core_settings_proxy.h
++++ b/Telegram/SourceFiles/core/core_settings_proxy.h
+@@ -25,6 +25,9 @@ public:
+ 	static constexpr auto kDefaultProxyRotationTimeout = 10;
+ 
+ 	SettingsProxy();
++	[[nodiscard]] bool personalFallback() const { return _personalFallback; }
++	void fallbackPersonalProxy() { _personalFallback = true; }
++	[[nodiscard]] bool isPersonalProxy(const MTP::ProxyData &proxy) const;
+ 
+ 	[[nodiscard]] bool isEnabled() const;
+ 	[[nodiscard]] bool isSystem() const;
+@@ -74,6 +77,9 @@ public:
+ 	bool setFromSerialized(const QByteArray &serialized);
+ 
+ private:
++	// Runtime-only: never passed to the stock tdata serializer.
++	MTP::ProxyData _personalProxy;
++	bool _personalFallback = false;
+ 	bool _tryIPv6 = false;
+ 	bool _useProxyForCalls = false;
+ 	bool _proxyRotationEnabled = false;
+diff --git a/Telegram/SourceFiles/core/launcher.cpp b/Telegram/SourceFiles/core/launcher.cpp
+index 527133e65d4ecdaf904c1b3ab39f82e443da4b30..fe152f0b9bc06688a102265460a187d4f2eac860 100644
+--- a/Telegram/SourceFiles/core/launcher.cpp
++++ b/Telegram/SourceFiles/core/launcher.cpp
+@@ -238,7 +238,7 @@ bool MoveLegacyAlphaFolder(const QString &folder, const QString &file) {
+ 	return true;
+ }
+ 
+-bool MoveLegacyAlphaFolder() {
++[[maybe_unused]] bool MoveLegacyAlphaFolder() {
+ 	if (!MoveLegacyAlphaFolder(u"TelegramAlpha_data"_q, u"alpha"_q)
+ 		|| !MoveLegacyAlphaFolder(u"TelegramBeta_data"_q, u"beta"_q)) {
+ 		return false;
+@@ -247,58 +247,8 @@ bool MoveLegacyAlphaFolder() {
+ }
+ 
+ bool CheckPortableVersionFolder() {
+-	if (!MoveLegacyAlphaFolder()) {
+-		return false;
+-	}
+-
+-	const auto portable = cExeDir() + u"TelegramForcePortable"_q;
+-	QFile key(portable + u"/tdata/alpha"_q);
+-	if (cAlphaVersion()) {
+-		Assert(*AlphaPrivateKey != 0);
+-
+-		cForceWorkingDir(portable);
+-		QDir().mkpath(cWorkingDir() + u"tdata"_q);
+-		cSetAlphaPrivateKey(QByteArray(AlphaPrivateKey));
+-		if (!key.open(QIODevice::WriteOnly)) {
+-			LOG(("FATAL: Could not open '%1' for writing private key!"
+-				).arg(key.fileName()));
+-			return false;
+-		}
+-		QDataStream dataStream(&key);
+-		dataStream.setVersion(QDataStream::Qt_5_3);
+-		dataStream << quint64(cRealAlphaVersion()) << cAlphaPrivateKey();
+-		return true;
+-	}
+-	if (!QDir(portable).exists()) {
+-		return true;
+-	}
+-	cForceWorkingDir(portable);
+-	if (!key.exists()) {
+-		return true;
+-	}
+-
+-	if (!key.open(QIODevice::ReadOnly)) {
+-		LOG(("FATAL: could not open '%1' for reading private key. "
+-			"Delete it or reinstall private alpha version."
+-			).arg(key.fileName()));
+-		return false;
+-	}
+-	QDataStream dataStream(&key);
+-	dataStream.setVersion(QDataStream::Qt_5_3);
+-
+-	quint64 v;
+-	QByteArray k;
+-	dataStream >> v >> k;
+-	if (dataStream.status() != QDataStream::Ok || k.isEmpty()) {
+-		LOG(("FATAL: '%1' is corrupted. "
+-			"Delete it or reinstall private alpha version."
+-			).arg(key.fileName()));
+-		return false;
+-	}
+-	cSetAlphaVersion(AppVersion * 1000ULL);
+-	cSetAlphaPrivateKey(k);
+-	cSetRealAlphaVersion(v);
+-	return true;
++	cForceWorkingDir(cExeDir());
++	return QDir().mkpath(cWorkingDir() + u"tdata"_q);
+ }
+ 
+ base::options::toggle OptionFractionalScalingEnabled({
+@@ -444,14 +394,8 @@ int Launcher::exec() {
+ }
+ 
+ bool Launcher::validateCustomWorkingDir() {
+-	if (customWorkingDir()) {
+-		if (_customWorkingDir == cWorkingDir()) {
+-			_customWorkingDir = QString();
+-			return false;
+-		}
+-		cForceWorkingDir(_customWorkingDir);
+-		return true;
+-	}
++	_customWorkingDir = QString();
++	cForceWorkingDir(cExeDir());
+ 	return false;
+ }
+ 
+diff --git a/Telegram/SourceFiles/core/personal_proxy_policy.h b/Telegram/SourceFiles/core/personal_proxy_policy.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2a06c229419bfb1fd8584e769a524ca6c2d9e99
+--- /dev/null
++++ b/Telegram/SourceFiles/core/personal_proxy_policy.h
+@@ -0,0 +1,42 @@
++#pragma once
++#include <cstdint>
++
++namespace Core {
++
++// No persisted state. A new process constructs a fresh policy.
++class PersonalProxyPolicy final {
++public:
++	enum class State { Waiting, Trying, ProxyConnected, Direct, DirectConnected };
++	static constexpr std::int64_t kTimeout = 30000;
++	State update(std::int64_t now, bool ready, bool connected, bool direct) {
++		_fallback = _fallback || direct;
++		if (_fallback) {
++			return connected ? State::DirectConnected : State::Direct;
++		}
++		if (!ready) {
++			_disconnectedAt = -1;
++			return State::Waiting;
++		}
++		if (connected) {
++			_everConnected = true;
++			_disconnectedAt = -1;
++			return State::ProxyConnected;
++		}
++		if (_disconnectedAt < 0) {
++			_disconnectedAt = now;
++		}
++		if (now - _disconnectedAt >= kTimeout) {
++			_fallback = true;
++			return State::Direct;
++		}
++		return State::Trying;
++	}
++	bool fallback() const { return _fallback; }
++	bool everConnected() const { return _everConnected; }
++private:
++	std::int64_t _disconnectedAt = -1;
++	bool _fallback = false;
++	bool _everConnected = false;
++};
++
++} // namespace Core
+diff --git a/Telegram/SourceFiles/core/preconfigured_proxy_config.h b/Telegram/SourceFiles/core/preconfigured_proxy_config.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..65b6d3d8cdbdffedbbb1dd225160c256bbedfbf1
+--- /dev/null
++++ b/Telegram/SourceFiles/core/preconfigured_proxy_config.h
+@@ -0,0 +1,6 @@
++#pragma once
++namespace Core::PreconfiguredProxyConfig {
++inline constexpr auto kHostBase64 = "";
++inline constexpr auto kSecretBase64 = "";
++inline constexpr auto kPort = 0;
++} // namespace Core::PreconfiguredProxyConfig
+diff --git a/Telegram/SourceFiles/core/proxy_rotation_manager.cpp b/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
+index 72723d4db408be654dbf68e1ac40bba21c59d4e6..99bb1182018d6584db52732097dc90dd07d2fd84 100644
+--- a/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
++++ b/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
+@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "mtproto/facade.h"
+ 
+ #include <algorithm>
++#include <QtCore/QCoreApplication>
++#include <QtCore/QSaveFile>
+ 
+ namespace Core {
+ namespace {
+@@ -25,8 +27,10 @@ constexpr auto kProxyRotationMaxActiveChecks = 10;
+ } // namespace
+ 
+ ProxyRotationManager::ProxyRotationManager()
+-: _checkTimer([=] { runChecks(); })
++: _personalTimer([=] { personalTick(); })
++, _checkTimer([=] { runChecks(); })
+ , _switchTimer([=] { switchTimerDone(); }) {
++	_personalTimer.callOnce(1000);
+ 	App().domain().accountsChanges(
+ 	) | rpl::on_next([=] {
+ 		stopChecking();
+@@ -34,6 +38,51 @@ ProxyRotationManager::ProxyRotationManager()
+ 	}, _lifetime);
+ }
+ 
++void ProxyRotationManager::personalTick() {
++	auto ready = false;
++	auto connected = false;
++	for (const auto &entry : App().domain().accounts()) {
++		const auto account = entry.account.get();
++		if (!account->mtpStarted() || account->mtp().isTestMode()) {
++			continue;
++		}
++		// Includes the unauthenticated login screen, not just sessions.
++		ready = true;
++		connected = connected || account->mtp().dcstate() == MTP::ConnectedState;
++	}
++	const auto state = _personalPolicy.update(
++		crl::now(), ready, connected, App().settings().proxy().personalFallback());
++	if (_personalPolicy.fallback()) {
++		App().fallbackPersonalProxy();
++	}
++	const auto text = [&] {
++		using State = PersonalProxyPolicy::State;
++		switch (state) {
++		case State::Waiting: return "waiting_for_account";
++		case State::Trying: return "trying_mtproto";
++		case State::ProxyConnected: return "mtproto_connected";
++		case State::Direct: return "fallback_direct";
++		case State::DirectConnected: return "direct_connected";
++		}
++		Unexpected("Personal proxy state");
++	}();
++	const auto data = QByteArray("status=") + text
++		+ "\npid=" + QByteArray::number(QCoreApplication::applicationPid())
++		+ "\nmtproto_ever_connected=" + (_personalPolicy.everConnected() ? "1" : "0")
++		+ "\nfallback_latched=" + (_personalPolicy.fallback() ? "1" : "0")
++		+ "\n";
++	if (data != _personalLastState) {
++		auto file = QSaveFile(QCoreApplication::applicationDirPath()
++			+ u"/tdata/personal_proxy_state.txt"_q);
++		if (file.open(QIODevice::WriteOnly)
++			&& file.write(data) == data.size()
++			&& file.commit()) {
++			_personalLastState = data;
++		}
++	}
++	_personalTimer.callOnce(1000);
++}
++
+ void ProxyRotationManager::settingsChanged() {
+ 	stopChecking();
+ 	pruneRemovedEntries();
+diff --git a/Telegram/SourceFiles/core/proxy_rotation_manager.h b/Telegram/SourceFiles/core/proxy_rotation_manager.h
+index c1fee276961c4f98e21ab2a8e495a1d687672804..335615f8d08421f179862ff16f0f6c7f9344d5a9 100644
+--- a/Telegram/SourceFiles/core/proxy_rotation_manager.h
++++ b/Telegram/SourceFiles/core/proxy_rotation_manager.h
+@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #pragma once
+ 
+ #include "base/timer.h"
++#include "core/personal_proxy_policy.h"
+ #include "mtproto/proxy_check.h"
+ 
+ #include <rpl/lifetime.h>
+@@ -65,6 +66,10 @@ private:
+ 	[[nodiscard]] bool switchToAvailable();
+ 	[[nodiscard]] bool shouldSwitchToAvailable() const;
+ 
++	void personalTick();
++	base::Timer _personalTimer;
++	PersonalProxyPolicy _personalPolicy;
++	QByteArray _personalLastState;
+ 	base::Timer _checkTimer;
+ 	base::Timer _switchTimer;
+ 	std::vector<Entry> _entries;
+diff --git a/Telegram/SourceFiles/logs.cpp b/Telegram/SourceFiles/logs.cpp
+index 451ee22c87d5dd723dbcc141f792dde39740c231..07316d71127fb54c554089ae1a7c3605d4a403ed 100644
+--- a/Telegram/SourceFiles/logs.cpp
++++ b/Telegram/SourceFiles/logs.cpp
+@@ -50,7 +50,7 @@ QMutex *_logsMutex(LogDataType type, bool clear = false) {
+ }
+ 
+ QString _logsFilePath(LogDataType type, const QString &postfix = QString()) {
+-	QString path(cWorkingDir());
++	QString path(cWorkingDir() + u"tdata/"_q);
+ 	switch (type) {
+ 	case LogDataMain: path += u"log"_q + postfix + u".txt"_q; break;
+ 	case LogDataDebug: path += u"DebugLogs/log"_q + postfix + u".txt"_q; break;
+@@ -176,10 +176,10 @@ private:
+ 
+ 				LogsStartIndexChosen = -1;
+ 
+-				QDir working(cWorkingDir()); // delete all other log_startXX.txt that we can
++				QDir working(cWorkingDir() + u"tdata/"_q); // delete all other log_startXX.txt that we can
+ 				QStringList oldlogs = working.entryList(QStringList("log_start*.txt"), QDir::Files);
+ 				for (QStringList::const_iterator i = oldlogs.cbegin(), e = oldlogs.cend(); i != e; ++i) {
+-					QString oldlog = cWorkingDir() + *i, oldlogend = i->mid(u"log_start"_q.size());
++					QString oldlog = cWorkingDir() + u"tdata/"_q + *i, oldlogend = i->mid(u"log_start"_q.size());
+ 					if (oldlogend.size() == 1 + u".txt"_q.size() && oldlogend.at(0).isDigit() && base::StringViewMid(oldlogend, 1) == u".txt"_q) {
+ 						bool removed = QFile(oldlog).remove();
+ 						LOG(("Old start log '%1' found, deleted: %2").arg(*i, Logs::b(removed)));
+@@ -220,7 +220,7 @@ private:
+ 					files[type]->close();
+ 				}
+ 			} else {
+-				QDir().mkdir(cWorkingDir() + u"DebugLogs"_q);
++				QDir().mkdir(cWorkingDir() + u"tdata/DebugLogs"_q);
+ 			}
+ 		}
+ 		if (files[type]->open(mode)) {
+@@ -270,6 +270,11 @@ LogsInMemoryList *DeletedLogsInMemory = SharedMemoryLocation<LogsInMemoryList, 0
+ QString LogsBeforeSingleInstanceChecked; // LogsInMemory already dumped in LogsData, but LogsData is about to be deleted
+ 
+ void _logsWrite(LogDataType type, const QString &msg) {
++	// Only the fixed-vocabulary personal state file is diagnostic output.
++	// Keep the stock log lifecycle, but do not persist arbitrary entries.
++	if (!msg.startsWith(u"[personal-status-only]"_q)) {
++		return;
++	}
+ 	if (LogsData && (type == LogDataMain || LogsStartIndexChosen < 0)) {
+ 		if (type == LogDataMain || Logs::DebugEnabled()) {
+ 			LogsData->write(type, msg);
+@@ -341,7 +346,8 @@ bool DebugModeEnabled = false;
+ } // namespace
+ 
+ void SetDebugEnabled(bool enabled) {
+-	DebugModeEnabled = enabled;
++	Q_UNUSED(enabled);
++	DebugModeEnabled = false;
+ }
+ 
+ bool DebugEnabled() {
+diff --git a/Telegram/SourceFiles/main/main_account.h b/Telegram/SourceFiles/main/main_account.h
+index eb05f1b40489aea6278eb8225006023af6c73cea..42c6d4bb07ba23d4269c9ecff477e6c008124029 100644
+--- a/Telegram/SourceFiles/main/main_account.h
++++ b/Telegram/SourceFiles/main/main_account.h
+@@ -79,6 +79,7 @@ public:
+ 	[[nodiscard]] rpl::producer<Session*> sessionValue() const;
+ 	[[nodiscard]] rpl::producer<Session*> sessionChanges() const;
+ 
++	[[nodiscard]] bool mtpStarted() const { return _mtp != nullptr; }
+ 	[[nodiscard]] MTP::Instance &mtp() const {
+ 		return *_mtp;
+ 	}
