@@ -1,0 +1,24 @@
+﻿Telegram Personal V2.1 launcher/encoding fix
+- PowerShell script saved as UTF-8 BOM for Windows PowerShell 5.1.
+- BAT launchers are ASCII-only and keep the window open on early errors.
+
+Telegram Personal V2 build-kit design
+
+Purpose:
+- Windows x64 Telegram Desktop private reproducible build.
+- Always use ./tdata beside Telegram.exe; no TelegramForcePortable directory.
+- Built-in MTProto proxy is hidden from the normal proxy list.
+- Built-in MTProto is forced at each application start even when existing tdata had proxy disabled.
+- If existing logged-in accounts are not connected after 10 seconds, fall back to direct for the rest of that run.
+- On next launch, retry the built-in MTProto again.
+- Runtime proxy status (not endpoint/secret) is written to tdata/personal_proxy_state.txt.
+- Built-in proxy endpoint is not serialized into the normal tdata proxy list; while the hidden proxy is active, persisted connection mode is System/direct for cleaner compatibility with a stock Telegram.exe.
+- Release build; auto-update and crash reports disabled.
+
+Pinned source:
+Telegram Desktop 7.2.5 state at commit 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955.
+
+Security:
+- tdata is never uploaded by the helper.
+- API_HASH and MTProto secret are GitHub Repository Secrets only.
+- The MTProto secret is embedded in the final executable and can be extracted by a skilled reverse engineer; UI hiding is not cryptographic secrecy.
