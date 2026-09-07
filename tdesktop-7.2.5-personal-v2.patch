@@ -1,0 +1,326 @@
+diff --git a/Telegram/SourceFiles/boxes/connection_box.cpp b/Telegram/SourceFiles/boxes/connection_box.cpp
+--- a/Telegram/SourceFiles/boxes/connection_box.cpp
++++ b/Telegram/SourceFiles/boxes/connection_box.cpp
+@@ -1722,11 +1722,13 @@ ProxiesBoxController::ProxiesBoxController(not_null<Main::Account*> account)
+ : _account(account)
+ , _settings(Core::App().settings().proxy())
+ , _saveTimer([] { Local::writeSettings(); }) {
+ 	_list = ranges::views::all(
+ 		_settings.list()
+-	) | ranges::views::transform([&](const ProxyData &proxy) {
++	) | ranges::views::filter([&](const ProxyData &proxy) {
++		return !_settings.isPreconfiguredProxy(proxy);
++	}) | ranges::views::transform([&](const ProxyData &proxy) {
+ 		return Item{ ++_idCounter, proxy };
+ 	}) | ranges::to_vector;
+ 	_settings.connectionTypeChanges(
+ 	) | rpl::on_next([=] {
+ 		_proxySettingsChanges.fire_copy(_settings.settings());
+diff --git a/Telegram/SourceFiles/core/core_settings_proxy.cpp b/Telegram/SourceFiles/core/core_settings_proxy.cpp
+--- a/Telegram/SourceFiles/core/core_settings_proxy.cpp
++++ b/Telegram/SourceFiles/core/core_settings_proxy.cpp
+@@ -8,9 +8,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "core/core_settings_proxy.h"
+ 
+ #include "base/platform/base_platform_info.h"
++#include "core/preconfigured_proxy_config.h"
+ #include "storage/serialize_common.h"
+ 
+ #include <algorithm>
+ 
+ namespace Core {
+ namespace {
+@@ -15,5 +16,26 @@ namespace Core {
+ namespace {
+ 
++[[nodiscard]] QString DecodePreconfiguredProxyValue(const char *base64) {
++	return QString::fromUtf8(QByteArray::fromBase64(base64));
++}
++
++[[nodiscard]] const MTP::ProxyData &PreconfiguredProxyData() {
++	static_assert(PreconfiguredProxyConfig::kPort > 0);
++	static_assert(PreconfiguredProxyConfig::kPort <= 65535);
++
++	static const auto result = [] {
++		auto proxy = MTP::ProxyData();
++		proxy.type = MTP::ProxyData::Type::Mtproto;
++		proxy.host = DecodePreconfiguredProxyValue(
++			PreconfiguredProxyConfig::kHostBase64);
++		proxy.port = PreconfiguredProxyConfig::kPort;
++		proxy.password = DecodePreconfiguredProxyValue(
++			PreconfiguredProxyConfig::kSecretBase64);
++		return proxy;
++	}();
++	return result;
++}
++
+ [[nodiscard]] qint32 ProxySettingsToInt(MTP::ProxyData::Settings settings) {
+ 	switch(settings) {
+ 	case MTP::ProxyData::Settings::System: return 0;
+@@ -105,29 +127,52 @@ std::vector<int> NormalizeProxyRotationPreferredIndices(
+ } // namespace
+ 
+ SettingsProxy::SettingsProxy()
+-: _tryIPv6(!Platform::IsWindows()) {
++: _tryIPv6(!Platform::IsWindows())
++, _settings(MTP::ProxyData::Settings::Enabled)
++, _selected(PreconfiguredProxyData())
++, _list{ _selected } {
+ }
+ QByteArray SettingsProxy::serialize() const {
++	const auto persistedSettings = isPreconfiguredProxy(_selected)
++		? MTP::ProxyData::Settings::System
++		: _settings;
+-	const auto serializedSelected = SerializeProxyData(_selected);
+-	const auto serializedList = ranges::views::all(
+-		_list
+-	) | ranges::views::transform(SerializeProxyData) | ranges::to_vector;
++	const auto serializedSelected = SerializeProxyData(
++		isPreconfiguredProxy(_selected) ? MTP::ProxyData() : _selected);
++	auto serializedList = std::vector<QByteArray>();
++	auto persistedIndices = std::vector<int>(_list.size(), -1);
++	serializedList.reserve(_list.size());
++	for (auto i = 0; i != int(_list.size()); ++i) {
++		if (isPreconfiguredProxy(_list[i])) {
++			continue;
++		}
++		persistedIndices[i] = int(serializedList.size());
++		serializedList.push_back(SerializeProxyData(_list[i]));
++	}
++	auto serializedPreferredIndices = std::vector<int>();
++	serializedPreferredIndices.reserve(_proxyRotationPreferredIndices.size());
++	for (const auto index : _proxyRotationPreferredIndices) {
++		if (index >= 0
++			&& index < int(persistedIndices.size())
++			&& persistedIndices[index] >= 0) {
++			serializedPreferredIndices.push_back(persistedIndices[index]);
++		}
++	}
+ 	const auto size = 3 * sizeof(qint32)
+ 		+ Serialize::bytearraySize(serializedSelected)
+ 		+ 1 * sizeof(qint32)
+ 		+ ranges::accumulate(
+ 			serializedList,
+ 			0,
+ 			ranges::plus(),
+ 			&Serialize::bytearraySize)
+-		+ (4 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
++		+ (4 + int(serializedPreferredIndices.size())) * sizeof(qint32);
+ 	auto stream = Serialize::ByteArrayWriter(size);
+ 	stream
+ 		<< qint32(_tryIPv6 ? 1 : 0)
+ 		<< qint32(_useProxyForCalls ? 1 : 0)
+-		<< ProxySettingsToInt(_settings)
++		<< ProxySettingsToInt(persistedSettings)
+ 		<< serializedSelected
+-		<< qint32(_list.size());
++		<< qint32(serializedList.size());
+ 	for (const auto &i : serializedList) {
+ 		stream << i;
+ 	}
+@@ -132,10 +174,10 @@ QByteArray SettingsProxy::serialize() const {
+ 		<< qint32(_checkIpWarningShown ? 1 : 0)
+ 		<< qint32(_proxyRotationEnabled ? 1 : 0)
+ 		<< qint32(_proxyRotationTimeout)
+-		<< qint32(_proxyRotationPreferredIndices.size());
+-	for (const auto index : _proxyRotationPreferredIndices) {
++		<< qint32(serializedPreferredIndices.size());
++	for (const auto index : serializedPreferredIndices) {
+ 		stream << qint32(index);
+ 	}
+ 	return std::move(stream).result();
+ }
+ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
+@@ -213,15 +255,18 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
+ 	_tryIPv6 = (tryIPv6 == 1);
+ 	_useProxyForCalls = (useProxyForCalls == 1);
+ 	_checkIpWarningShown = (checkIpWarningShown == 1);
+ 	_proxyRotationEnabled = (proxyRotationEnabled == 1);
+-	setProxyRotationTimeout(proxyRotationTimeout);
+-	_settings = IntToProxySettings(settings);
+-	_selected = DeserializeProxyData(selectedProxy);
+-	if (_selected.type == MTP::ProxyData::Type::None) {
+-		_selected = MTP::ProxyData();
+-	}
++	Q_UNUSED(proxyRotationTimeout);
++	Q_UNUSED(settings);
++	Q_UNUSED(selectedProxy);
++	setProxyRotationTimeout(kDefaultProxyRotationTimeout);
++	_settings = MTP::ProxyData::Settings::Enabled;
++	_selected = PreconfiguredProxyData();
+ 	_list = std::move(list);
++	if (!ranges::contains(_list, PreconfiguredProxyData())) {
++		_list.push_back(PreconfiguredProxyData());
++	}
+ 	if (!skippedIndices.empty()) {
+ 		for (auto &index : preferredIndices) {
+ 			if (ranges::contains(skippedIndices, index)) {
+ 				index = -1;
+@@ -247,7 +293,12 @@ bool SettingsProxy::isDisabled() const {
+ 	return _settings == MTP::ProxyData::Settings::Disabled;
+ }
+ 
++bool SettingsProxy::isPreconfiguredProxy(
++		const MTP::ProxyData &proxy) const {
++	return proxy == PreconfiguredProxyData();
++}
++
+ bool SettingsProxy::checkIpWarningShown() const {
+ 	return _checkIpWarningShown;
+ }
+ 
+diff --git a/Telegram/SourceFiles/core/core_settings_proxy.h b/Telegram/SourceFiles/core/core_settings_proxy.h
+--- a/Telegram/SourceFiles/core/core_settings_proxy.h
++++ b/Telegram/SourceFiles/core/core_settings_proxy.h
+@@ -25,9 +25,11 @@ public:
+ 	SettingsProxy();
+ 
+ 	[[nodiscard]] bool isEnabled() const;
+ 	[[nodiscard]] bool isSystem() const;
+ 	[[nodiscard]] bool isDisabled() const;
++	[[nodiscard]] bool isPreconfiguredProxy(
++		const MTP::ProxyData &proxy) const;
+ 	[[nodiscard]] rpl::producer<> connectionTypeChanges() const;
+ 	[[nodiscard]] rpl::producer<> connectionTypeValue() const;
+ 	void connectionTypeChangesNotify();
+ 
+diff --git a/Telegram/SourceFiles/core/preconfigured_proxy_config.h b/Telegram/SourceFiles/core/preconfigured_proxy_config.h
+new file mode 100644
+--- /dev/null
++++ b/Telegram/SourceFiles/core/preconfigured_proxy_config.h
+@@ -0,0 +1,16 @@
++/*
++This file is part of Telegram Desktop,
++the official desktop application for the Telegram messaging service.
++
++For license and copyright information please follow this link:
++https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
++*/
++#pragma once
++
++namespace Core::PreconfiguredProxyConfig {
++
++inline constexpr auto kHostBase64 = "";
++inline constexpr auto kSecretBase64 = "";
++inline constexpr auto kPort = 0;
++
++} // namespace Core::PreconfiguredProxyConfig
+diff --git a/Telegram/SourceFiles/core/launcher.cpp b/Telegram/SourceFiles/core/launcher.cpp
+--- a/Telegram/SourceFiles/core/launcher.cpp
++++ b/Telegram/SourceFiles/core/launcher.cpp
+@@ -235,7 +235,7 @@ bool CheckPortableVersionFolder() {
+ 		return false;
+ 	}
+ 
+-	const auto portable = cExeDir() + u"TelegramForcePortable"_q;
++	const auto portable = cExeDir();
+ 	QFile key(portable + u"/tdata/alpha"_q);
+ 	if (cAlphaVersion()) {
+ 		Assert(*AlphaPrivateKey != 0);
+diff --git a/Telegram/SourceFiles/core/proxy_rotation_manager.cpp b/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
+--- a/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
++++ b/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
+@@ -11,17 +11,28 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "main/main_account.h"
+ #include "main/main_domain.h"
+ #include "mtproto/facade.h"
+ #include <algorithm>
++#include <QtCore/QCoreApplication>
++#include <QtCore/QFile>
+ 
+ namespace Core {
+ namespace {
+ 
+ constexpr auto kProxyRotationCheckInterval = 2 * crl::time(1000);
+ constexpr auto kProxyRotationCheckLifetime = 20 * crl::time(1000);
+ constexpr auto kProxyRotationMaxActiveChecks = 10;
+ 
++void WritePersonalProxyState(const char *state) {
++	const auto path = QCoreApplication::applicationDirPath()
++		+ QStringLiteral("/tdata/personal_proxy_state.txt");
++	auto file = QFile(path);
++	if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
++		file.write(state);
++	}
++}
++
+ } // namespace
+ 
+ ProxyRotationManager::ProxyRotationManager()
+ : _checkTimer([=] { runChecks(); })
+ , _switchTimer([=] { switchTimerDone(); }) {
+@@ -43,13 +56,15 @@ void ProxyRotationManager::handleConnectionStateChanged(
+ 	reevaluate();
+ }
+ 
+ bool ProxyRotationManager::shouldObserve() const {
+ 	const auto &settings = App().settings().proxy();
++	const auto builtIn = settings.isPreconfiguredProxy(settings.selected());
+ 	return settings.isEnabled()
+ 		&& settings.selected()
+-		&& settings.proxyRotationEnabled()
+-		&& (settings.list().size() > 1);
++		&& (builtIn
++			|| (settings.proxyRotationEnabled()
++				&& (settings.list().size() > 1)));
+ }
+ std::vector<not_null<Main::Account*>> ProxyRotationManager::productionAccounts() const {
+ 	auto result = std::vector<not_null<Main::Account*>>();
+ 	for (const auto &entry : App().domain().accounts()) {
+@@ -101,9 +116,14 @@ void ProxyRotationManager::reevaluate() {
+ 	const auto stateProj = [](not_null<Main::Account*> account) {
+ 		return account->mtp().dcstate();
+ 	};
+ 	if (ranges::contains(accounts, MTP::ConnectedState, stateProj)) {
++		const auto &settings = App().settings().proxy();
++		if (settings.isEnabled()
++			&& settings.isPreconfiguredProxy(settings.selected())) {
++			WritePersonalProxyState("mtproto_connected\r\n");
++		}
+ 		stopChecking();
+ 		return;
+ 	}
+ 	startChecking();
+ }
+@@ -111,13 +131,17 @@ void ProxyRotationManager::startChecking() {
+ 	if (_checking) {
+ 		return;
+ 	}
++	const auto &settings = App().settings().proxy();
++	if (settings.isPreconfiguredProxy(settings.selected())) {
++		WritePersonalProxyState("trying_mtproto\r\n");
++	}
+ 	_checking = true;
+ 	_waitingToSwitch = false;
+ 	_switchStartedAt = crl::now();
+ 	updateProbeOrder();
+ 	runChecks();
+-	const auto timeout = App().settings().proxy().proxyRotationTimeout();
++	const auto timeout = settings.proxyRotationTimeout();
+ 	_switchTimer.callOnce(timeout * crl::time(1000));
+ }
+ void ProxyRotationManager::stopChecking() {
+ 	_checkTimer.cancel();
+@@ -249,10 +274,21 @@ void ProxyRotationManager::startNextCheck() {
+ 	}
+ }
+ void ProxyRotationManager::switchTimerDone() {
+-	if (!_checking || !shouldSwitchToAvailable()) {
++	if (!_checking) {
+ 		return;
+ 	}
++	const auto &settings = App().settings().proxy();
++	if (settings.isPreconfiguredProxy(settings.selected())) {
++		const auto selected = settings.selected();
++		stopChecking();
++		WritePersonalProxyState("fallback_direct\r\n");
++		App().setCurrentProxy(
++			selected,
++			MTP::ProxyData::Settings::System);
++		return;
++	}
++	if (!shouldSwitchToAvailable()) return;
+ 	_waitingToSwitch = !switchToAvailable();
+ }
+ 
+ void ProxyRotationManager::clearPendingChecks() {
