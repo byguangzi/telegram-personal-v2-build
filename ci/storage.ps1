@@ -7,6 +7,10 @@ $volumes = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Where-Obj
 foreach ($volume in $volumes) { Write-Host ('DISK {0}: free {1:N1} GiB / total {2:N1} GiB' -f $volume.DeviceID,($volume.FreeSpace/1GB),($volume.Size/1GB)) }
 if ($Mode -eq 'Report') { return }
 if ($Mode -eq 'Prepare') {
+    if ($env:REQUIRED_BUILD_DRIVE) {
+        if ($env:REQUIRED_BUILD_DRIVE -notmatch '^[A-Z]$') { throw 'Invalid dependency build drive.' }
+        $volumes = @($volumes | Where-Object { $_.DeviceID -eq ($env:REQUIRED_BUILD_DRIVE + ':') })
+    }
     if (-not $volumes.Count -or $volumes[0].FreeSpace -lt 40GB) { throw 'No NTFS volume has the required initial 40 GiB free. Stopping before source/dependency downloads.' }
     if ($env:GITHUB_RUN_ID -notmatch '^\d+$' -or $env:GITHUB_RUN_ATTEMPT -notmatch '^\d+$') { throw 'Invalid run identity.' }
     $buildPath = Join-Path ($volumes[0].DeviceID + '\') 'TelegramPersonalBuildV22'
@@ -21,6 +25,7 @@ if ($Mode -eq 'Prepare') {
     "TBUILD=$link" >> $env:GITHUB_ENV
     "BUILD_STORAGE=$buildPath" >> $env:GITHUB_ENV
     "STORAGE_KEY=$($volumes[0].DeviceID.TrimEnd(':'))" >> $env:GITHUB_ENV
+    if ($env:GITHUB_OUTPUT) { "drive=$($volumes[0].DeviceID.TrimEnd(':'))" >> $env:GITHUB_OUTPUT }
     "LibrariesPath=$link\Libraries\win64" >> $env:GITHUB_ENV
     "TEMP=$buildPath\Temp" >> $env:GITHUB_ENV
     "TMP=$buildPath\Temp" >> $env:GITHUB_ENV

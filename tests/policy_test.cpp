@@ -1,4 +1,7 @@
 #include "core/personal_proxy_policy.h"
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <iostream>
 int main() {

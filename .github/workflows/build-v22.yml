@@ -20,19 +20,23 @@ env:
   SOURCE_COMMIT: 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955
   SOURCE_VERSION: 7.2.5
 jobs:
-  build:
-    name: Windows x64 Release
-    runs-on: windows-latest
+  dependencies:
+    name: Stage 1 - Public dependencies
+    runs-on: windows-2025-vs2026
     timeout-minutes: 360
     defaults:
       run:
         shell: pwsh
+    outputs:
+      drive: ${{ steps.storage.outputs.drive }}
+      artifact: ${{ steps.upload-dependencies.outputs.artifact-id }}
     steps:
       - name: Checkout V2.2 build kit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Verify request and prepare build directory
+        id: storage
         env:
           REQUEST_COMMIT: ${{ inputs.kit_commit }}
         run: |
@@ -54,7 +58,7 @@ jobs:
           & "$env:GITHUB_WORKSPACE\scripts\verify-kit.ps1" -Cloud -Source "$env:TBUILD\tdesktop" | Out-Null
           $version = Get-Content "$env:TBUILD\tdesktop\Telegram\SourceFiles\core\version.h" -Raw
           if ($version -notmatch 'AppVersionStr = "7\.2\.5"') { throw 'Version mismatch.' }
-          python -m unittest discover -s "$env:GITHUB_WORKSPACE\tests" -p test_generator.py
+          python -m unittest discover -s "$env:GITHUB_WORKSPACE\tests" -p test_*.py
           if ($LASTEXITCODE -ne 0) { throw 'Secret parser regression tests failed.' }
       - name: Prepare official build metadata
         run: |
@@ -87,6 +91,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Policy test compilation failed.' }
           & "$env:RUNNER_TEMP\policy_test.exe"
           if ($LASTEXITCODE -ne 0) { throw 'Policy test failed.' }
+          cl /nologo /std:c++17 /EHsc /W4 /WX /I $include "$env:GITHUB_WORKSPACE\tests\archive_test.cpp" /Fe:"$env:RUNNER_TEMP\archive_test.exe" /Fo:"$env:RUNNER_TEMP\archive_test.obj"
+          if ($LASTEXITCODE -ne 0) { throw 'Archive test compilation failed.' }
+          & "$env:RUNNER_TEMP\archive_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Archive policy test failed.' }
       - name: Configure NuGet
         shell: cmd
         run: |
@@ -119,6 +127,111 @@ jobs:
         run: |
           call "%TBUILD%\tdesktop\Telegram\build\prepare\win.bat" silent
           if errorlevel 1 exit /b 1
+      - name: Package public dependencies with integrity manifest
+        run: |
+          python "$env:GITHUB_WORKSPACE\ci\dependencies.py" pack
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency packaging failed.' }
+      - name: Save dependencies before Telegram compilation
+        id: upload-dependencies
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: Public-dependencies-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dependency-transfer/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+      - name: Report dependency disk space
+        if: always()
+        run: '& "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode Report'
+  build:
+    name: Stage 2 - Windows x64 Release
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: pwsh
+    needs: dependencies
+    env:
+      REQUIRED_BUILD_DRIVE: ${{ needs.dependencies.outputs.drive }}
+    steps:
+      - name: Checkout V2.2 build kit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify request and prepare build directory
+        id: storage
+        env:
+          REQUEST_COMMIT: ${{ inputs.kit_commit }}
+        run: |
+          if ($env:REQUEST_COMMIT -ne $env:GITHUB_SHA) { throw 'Build kit commit changed; rerun the helper.' }
+          git config --global core.autocrlf false
+          git config --global user.name 'Telegram Personal Build'
+          git config --global user.email 'build@localhost'
+          & "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode Prepare
+      - name: Checkout exact official Telegram source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: telegramdesktop/tdesktop
+          ref: 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955
+          submodules: recursive
+          path: TBuild/tdesktop
+          persist-credentials: false
+      - name: Verify pinned source and apply V2.2 patch
+        run: |
+          & "$env:GITHUB_WORKSPACE\scripts\verify-kit.ps1" -Cloud -Source "$env:TBUILD\tdesktop" | Out-Null
+          $version = Get-Content "$env:TBUILD\tdesktop\Telegram\SourceFiles\core\version.h" -Raw
+          if ($version -notmatch 'AppVersionStr = "7\.2\.5"') { throw 'Version mismatch.' }
+          python -m unittest discover -s "$env:GITHUB_WORKSPACE\tests" -p test_*.py
+          if ($LASTEXITCODE -ne 0) { throw 'Secret parser regression tests failed.' }
+      - name: Prepare official build metadata
+        run: |
+          $doc = Get-Content "$env:TBUILD\tdesktop\docs\building-win.md" -Raw
+          if ($doc -notmatch '\*\*([0-9.]+)\*\* SDK version') { throw 'Cannot determine pinned SDK.' }
+          "SDK=$($Matches[1])" >> $env:GITHUB_ENV
+          $key = (Get-FileHash "$env:TBUILD\tdesktop\Telegram\build\prepare\prepare.py").Hash
+          "CACHE_KEY=$key" >> $env:GITHUB_ENV
+      - name: Initialize x64 MSVC 14.44
+        uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: '14.44'
+      - name: Ensure matching MSVC 14.44 ATL component
+        timeout-minutes: 20
+        run: '& "$env:GITHUB_WORKSPACE\ci\ensure-atl.ps1"'
+      - name: Refresh x64 compiler environment after ATL setup
+        uses: Eden-CI/msvc-dev-cmd@1bd71f95d6f3d1b2b3395b335cc63bcdc90cf223
+        with:
+          arch: x64
+          sdk: ${{ env.SDK }}
+          toolset: '14.44'
+      - name: Verify ATL before lengthy dependency compilation
+        run: '& "$env:GITHUB_WORKSPACE\ci\ensure-atl.ps1" -VerifyOnly'
+      - name: Compile and run connection policy regression tests
+        run: |
+          $include = "$env:TBUILD\tdesktop\Telegram\SourceFiles"
+          cl /nologo /std:c++17 /EHsc /W4 /WX /I $include "$env:GITHUB_WORKSPACE\tests\policy_test.cpp" /Fe:"$env:RUNNER_TEMP\policy_test.exe" /Fo:"$env:RUNNER_TEMP\policy_test.obj"
+          if ($LASTEXITCODE -ne 0) { throw 'Policy test compilation failed.' }
+          & "$env:RUNNER_TEMP\policy_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Policy test failed.' }
+          cl /nologo /std:c++17 /EHsc /W4 /WX /I $include "$env:GITHUB_WORKSPACE\tests\archive_test.cpp" /Fe:"$env:RUNNER_TEMP\archive_test.exe" /Fo:"$env:RUNNER_TEMP\archive_test.obj"
+          if ($LASTEXITCODE -ne 0) { throw 'Archive test compilation failed.' }
+          & "$env:RUNNER_TEMP\archive_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Archive policy test failed.' }
+      - name: Configure NuGet
+        shell: cmd
+        run: |
+          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
+          nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+      - name: Restore verified dependencies from preceding job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.dependencies.outputs.artifact }}
+          path: dependency-transfer/
+      - name: Validate and unpack dependency handoff
+        run: |
+          python "$env:GITHUB_WORKSPACE\ci\dependencies.py" unpack
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency restore failed; no fallback to recompiling dependencies.' }
       - name: Compress build intermediates and verify remaining disk space
         run: '& "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode BeforeCompile'
       - name: Generate private runtime configuration

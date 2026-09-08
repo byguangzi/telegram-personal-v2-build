@@ -7,24 +7,36 @@
   "workflow": "build-v22.yml",
   "artifact": "Telegram-Personal-v2.2",
   "changed_files": [
+    "Telegram/SourceFiles/apiwrap.cpp",
+    "Telegram/SourceFiles/apiwrap.h",
     "Telegram/SourceFiles/boxes/connection_box.cpp",
     "Telegram/SourceFiles/core/application.cpp",
     "Telegram/SourceFiles/core/application.h",
     "Telegram/SourceFiles/core/core_settings_proxy.cpp",
     "Telegram/SourceFiles/core/core_settings_proxy.h",
     "Telegram/SourceFiles/core/launcher.cpp",
+    "Telegram/SourceFiles/core/personal_archive_rules.h",
     "Telegram/SourceFiles/core/personal_proxy_policy.h",
     "Telegram/SourceFiles/core/preconfigured_proxy_config.h",
     "Telegram/SourceFiles/core/proxy_rotation_manager.cpp",
     "Telegram/SourceFiles/core/proxy_rotation_manager.h",
+    "Telegram/SourceFiles/history/history.cpp",
     "Telegram/SourceFiles/logs.cpp",
-    "Telegram/SourceFiles/main/main_account.h"
+    "Telegram/SourceFiles/main/main_account.h",
+    "Telegram/SourceFiles/main/main_session_settings.cpp",
+    "Telegram/SourceFiles/main/main_session_settings.h",
+    "Telegram/SourceFiles/window/notifications_manager.cpp",
+    "Telegram/SourceFiles/window/window_connecting_widget.cpp",
+    "Telegram/SourceFiles/window/window_peer_menu.cpp"
   ],
   "new_files": [
+    "Telegram/SourceFiles/core/personal_archive_rules.h",
     "Telegram/SourceFiles/core/personal_proxy_policy.h",
     "Telegram/SourceFiles/core/preconfigured_proxy_config.h"
   ],
   "baseline_blobs": {
+    "Telegram/SourceFiles/apiwrap.cpp": "22acaf73866dd61631cc2672a49885af36363ea1",
+    "Telegram/SourceFiles/apiwrap.h": "5660112e5d88549a3324fd1a3d69b63bee3bd3b6",
     "Telegram/SourceFiles/boxes/connection_box.cpp": "104c6ae353546d6c1cd40b37b8719d6946f5d39a",
     "Telegram/SourceFiles/core/application.cpp": "4528f5955b1e567b7c17d4792a080f74a9c2f857",
     "Telegram/SourceFiles/core/application.h": "ada2cf5f1a02a19941c908334d2f4fb22e013165",
@@ -33,8 +45,15 @@
     "Telegram/SourceFiles/core/launcher.cpp": "527133e65d4ecdaf904c1b3ab39f82e443da4b30",
     "Telegram/SourceFiles/core/proxy_rotation_manager.cpp": "72723d4db408be654dbf68e1ac40bba21c59d4e6",
     "Telegram/SourceFiles/core/proxy_rotation_manager.h": "c1fee276961c4f98e21ab2a8e495a1d687672804",
+    "Telegram/SourceFiles/history/history.cpp": "e6225f531e8942aed6b7c3acc6b7a28028717062",
     "Telegram/SourceFiles/logs.cpp": "451ee22c87d5dd723dbcc141f792dde39740c231",
-    "Telegram/SourceFiles/main/main_account.h": "eb05f1b40489aea6278eb8225006023af6c73cea"
+    "Telegram/SourceFiles/main/main_account.h": "eb05f1b40489aea6278eb8225006023af6c73cea",
+    "Telegram/SourceFiles/main/main_session_settings.cpp": "7597c5d570e67f7077f70660842cf37595c8b1df",
+    "Telegram/SourceFiles/main/main_session_settings.h": "3940a64322f4a754cc5625c42d28205ee39610c1",
+    "Telegram/SourceFiles/window/notifications_manager.cpp": "bb61be2b82d783297d31f277ae4221e899ba5a71",
+    "Telegram/SourceFiles/window/window_connecting_widget.cpp": "ba50aef7f530d023120672d65df3146e8b59712f",
+    "Telegram/SourceFiles/window/window_peer_menu.cpp": "4a03ba9ac0ef4f21db72f24bf817b3b1fb0ca5fa"
   },
-  "patch_sha256": "bec0e95abb4cbbeb8d79fe2c1c3f6f52f8c9876d459deef1c77592e4d8e06ddd"
+  "patch_sha256": "fcf0a678b22e036a5cf8a91e9dc68de7366979b88a52db238813fbcfe2c95a31",
+  "edition": "two-stage-archive-20260909"
 }

@@ -8,10 +8,13 @@
   "scripts/verify-kit.ps1",
   "ci/ensure-atl.ps1",
   "ci/storage.ps1",
+  "ci/dependencies.py",
   "ci/generate_proxy.py",
   "ci/build.py",
   "ci/stage.py",
   "tests/policy_test.cpp",
+  "tests/archive_test.cpp",
+  "tests/test_dependencies.py",
   "tests/test_generator.py",
   "LICENSE",
   "LEGAL"
