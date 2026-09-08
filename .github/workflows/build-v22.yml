@@ -40,11 +40,7 @@ jobs:
           git config --global core.autocrlf false
           git config --global user.name 'Telegram Personal Build'
           git config --global user.email 'build@localhost'
-          $buildPath = Join-Path $env:USERPROFILE 'TBuild'
-          New-Item -ItemType Directory -Force -Path "$buildPath\Libraries" | Out-Null
-          New-Item -ItemType Junction -Path "$env:GITHUB_WORKSPACE\TBuild" -Target $buildPath | Out-Null
-          "TBUILD=$env:GITHUB_WORKSPACE\TBuild" >> $env:GITHUB_ENV
-          "LibrariesPath=$env:GITHUB_WORKSPACE\TBuild\Libraries\win64" >> $env:GITHUB_ENV
+          & "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode Prepare
       - name: Checkout exact official Telegram source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -100,7 +96,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: win-x64-v22-thirdparty-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          key: win-x64-v22-storage2-${{ env.STORAGE_KEY }}-thirdparty-${{ env.SDK }}-${{ env.CACHE_KEY }}
       - name: Restore library cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -110,19 +106,21 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: win-x64-v22-libs-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          key: win-x64-v22-storage2-${{ env.STORAGE_KEY }}-libs-${{ env.SDK }}-${{ env.CACHE_KEY }}
       - name: Restore Qt cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: win-x64-v22-qt-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          key: win-x64-v22-storage2-${{ env.STORAGE_KEY }}-qt-${{ env.SDK }}-${{ env.CACHE_KEY }}
       - name: Prepare official libraries with Release enabled
         shell: cmd
         run: |
           call "%TBUILD%\tdesktop\Telegram\build\prepare\win.bat" silent
           if errorlevel 1 exit /b 1
+      - name: Compress build intermediates and verify remaining disk space
+        run: '& "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode BeforeCompile'
       - name: Generate private runtime configuration
         env:
           PRECONFIGURED_PROXY_HOST: ${{ secrets.PRECONFIGURED_PROXY_HOST }}
@@ -141,6 +139,9 @@ jobs:
         run: |
           python "$env:GITHUB_WORKSPACE\ci\build.py"
           if ($LASTEXITCODE -ne 0) { throw 'Release build failed; actual redacted logs are above.' }
+      - name: Report disk space even after failure
+        if: always()
+        run: '& "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode Report'
       - name: Verify binary architecture, dependencies, size and SHA-256
         run: |
           python "$env:GITHUB_WORKSPACE\ci\stage.py"

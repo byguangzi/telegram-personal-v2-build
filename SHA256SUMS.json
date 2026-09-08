@@ -1,6 +1,6 @@
 {
   ".gitattributes": "7603dede85e9e465234b096b44492a28d3454c2005e4dada1c26a5419e4b77a0",
-  ".github/workflows/build-v22.yml": "b75002c89d8e1eac17fd75257de8dadf1df281863202af57e68b9b7cacb80084",
+  ".github/workflows/build-v22.yml": "a22b30ce1e0fff76709ecc2ea80e5a79be486e70409187250f3fce4a2337d047",
   "0_离线预检.bat": "d88bc36a70184294cad8004152e2a22e21b4a67fddbd55404c83d0ab93ad488d",
   "1_首次配置并构建.bat": "4cc10b81a0540c6c6f584025aaecf6cb9e1089dbff2c5a9fa143d23e1e140829",
   "2_只更换MTProto并重新构建.bat": "f3650e7d4946d7290cc298350662686a983f74a388a07624806e99a11827868e",
@@ -11,6 +11,7 @@
   "ci/ensure-atl.ps1": "e6ca5ba0bb04877a71fe99f64501b984bb444732ee102c9f02e74b03d811470f",
   "ci/generate_proxy.py": "8b82b00a3d5833961720da4269a0b5522d51cfefec2960d0469937cab644651e",
   "ci/stage.py": "8e8db6081304bee4cd62d67c4c836f818b8f7bb0ba3cb1eb47352143f9785f8c",
+  "ci/storage.ps1": "be622ce21083fe5a15cddbd2cbae04572af9cd4a3ce9751ac6bcded99e42d69b",
   "kit.json": "2d7489d85d5a3d1e64ca89e52ef28d95b1915e3ec4186f854a145a498410de8f",
   "LEGAL": "7f621fe813c7f7f10debe63b81a4d4a04d82771b625490077a44cc83adac23ab",
   "LICENSE": "d2d7cddf73207e9e8c5c949878bd2b90f1c1c05668d461fdc373435a0f684867",
@@ -21,7 +22,7 @@
   "tdesktop-7.2.5-personal-v2.2.patch": "bec0e95abb4cbbeb8d79fe2c1c3f6f52f8c9876d459deef1c77592e4d8e06ddd",
   "tests/policy_test.cpp": "e1375203bfd24dbc33fa3d0646b7b77db5cc36ca0c3f45cbb3fca3764e91e55f",
   "tests/test_generator.py": "0d960e1ce02a71c693efde9283dd17c9b07caec8f6676700d32170f85bec6669",
-  "upload-files.json": "c888e264762a1b5978f679832284a5d5d0d5dbf2965b0567adedb443b55b7b1f",
-  "先看这里.txt": "9376c1e17a058de16a161f34b53085ef65a9e901a7f40b3be402ce1d4b1cf9dd",
-  "审计与验证报告.md": "90bcd541ba3e4d1e7ee67ff1f9f28a699b2dc8f6393dc17f297b9b0629753428"
+  "upload-files.json": "68a4c1fd14435cae2aaaac013cc4eca3969f63ac73e663fabdac8f06fff3d48d",
+  "先看这里.txt": "677dc2f5447111ac0e812a3db53f5038f79dfe1ff8041b277e8d0ebda45af176",
+  "审计与验证报告.md": "8c15a1d0f73e02d72ae92521691e5285876acfa6c0cea0eed78741b8e0d1d99e"
 }

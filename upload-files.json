@@ -7,6 +7,7 @@
   "tdesktop-7.2.5-personal-v2.2.patch",
   "scripts/verify-kit.ps1",
   "ci/ensure-atl.ps1",
+  "ci/storage.ps1",
   "ci/generate_proxy.py",
   "ci/build.py",
   "ci/stage.py",
