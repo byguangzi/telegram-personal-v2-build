@@ -11,8 +11,17 @@ on:
         description: Exact uploaded build kit commit
         type: string
         required: true
+      dependency_run_id:
+        description: Optional previous run containing completed public dependencies
+        type: string
+        default: ''
+      dependency_artifact_id:
+        description: Exact public dependency artifact ID from that run
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: telegram-personal-v22
   cancel-in-progress: false
@@ -22,7 +31,7 @@ env:
 jobs:
   dependencies:
     name: Stage 1 - Public dependencies
-    if: github.event_name == 'workflow_dispatch' && github.repository_owner == github.actor && github.event.repository.private == false
+    if: github.event_name == 'workflow_dispatch' && github.repository_owner == github.actor && github.event.repository.private == false && inputs.dependency_run_id == '' && inputs.dependency_artifact_id == ''
     runs-on: windows-2025-vs2026
     timeout-minutes: 360
     defaults:
@@ -146,7 +155,7 @@ jobs:
         run: '& "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode Report'
   build:
     name: Stage 2 - Windows x64 Release
-    if: github.event_name == 'workflow_dispatch' && github.repository_owner == github.actor && github.event.repository.private == false
+    if: always() && !cancelled() && github.event_name == 'workflow_dispatch' && github.repository_owner == github.actor && github.event.repository.private == false && (needs.dependencies.result == 'success' || (needs.dependencies.result == 'skipped' && inputs.dependency_run_id != '' && inputs.dependency_artifact_id != ''))
     runs-on: windows-2025-vs2026
     timeout-minutes: 360
     defaults:
@@ -154,12 +163,39 @@ jobs:
         shell: pwsh
     needs: dependencies
     env:
-      REQUIRED_BUILD_DRIVE: ${{ needs.dependencies.outputs.drive }}
+      DEPENDENCY_RUN_ID: ${{ inputs.dependency_run_id || github.run_id }}
+      DEPENDENCY_ARTIFACT_ID: ${{ inputs.dependency_artifact_id || needs.dependencies.outputs.artifact }}
     steps:
       - name: Checkout V2.2 build kit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - name: Validate selected public dependency artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ($env:DEPENDENCY_RUN_ID -notmatch '^\d+$' -or $env:DEPENDENCY_ARTIFACT_ID -notmatch '^\d+$') { throw 'Invalid dependency selection.' }
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $meta = Invoke-RestMethod -Headers $headers -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$env:DEPENDENCY_ARTIFACT_ID"
+          if ($meta.expired -or $meta.workflow_run.id -ne [long]$env:DEPENDENCY_RUN_ID -or $meta.workflow_run.repository_id -ne [long]$env:GITHUB_REPOSITORY_ID) { throw 'Dependency artifact provenance/expiry check failed.' }
+          if ($meta.name -notmatch ("^Public-dependencies-" + $env:DEPENDENCY_RUN_ID + "-\d+$")) { throw 'Not a public dependency artifact.' }
+      - name: Restore exact public dependency artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ env.DEPENDENCY_ARTIFACT_ID }}
+          run-id: ${{ env.DEPENDENCY_RUN_ID }}
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: dependency-transfer/
+      - name: Read original dependency drive and verify download layout
+        run: |
+          $dir = Join-Path $env:GITHUB_WORKSPACE 'dependency-transfer'
+          $manifestPath = Join-Path $dir 'dependencies.json'
+          if (-not (Test-Path -LiteralPath $manifestPath) -or -not (Test-Path -LiteralPath (Join-Path $dir 'dependencies.tar.gz'))) { throw 'Dependency download layout mismatch: expected dependencies.json and dependencies.tar.gz directly in dependency-transfer.' }
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.format -ne 1 -or $manifest.identity.SOURCE_COMMIT -ne $env:SOURCE_COMMIT) { throw 'Dependency source/version mismatch.' }
+          if ($manifest.identity.BUILD_STORAGE -notmatch '^([A-Z]):\\TelegramPersonalBuildV22$') { throw 'Invalid original dependency build path.' }
+          "REQUIRED_BUILD_DRIVE=$($Matches[1])" >> $env:GITHUB_ENV
       - name: Verify request and prepare build directory
         id: storage
         env:
@@ -225,11 +261,6 @@ jobs:
         run: |
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
-      - name: Restore verified dependencies from preceding job
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          artifact-ids: ${{ needs.dependencies.outputs.artifact }}
-          path: dependency-transfer/
       - name: Validate and unpack dependency handoff
         run: |
           python "$env:GITHUB_WORKSPACE\ci\dependencies.py" unpack
