@@ -22,6 +22,7 @@ env:
 jobs:
   dependencies:
     name: Stage 1 - Public dependencies
+    if: github.event_name == 'workflow_dispatch' && github.repository_owner == github.actor && github.event.repository.private == false
     runs-on: windows-2025-vs2026
     timeout-minutes: 360
     defaults:
@@ -145,6 +146,7 @@ jobs:
         run: '& "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode Report'
   build:
     name: Stage 2 - Windows x64 Release
+    if: github.event_name == 'workflow_dispatch' && github.repository_owner == github.actor && github.event.repository.private == false
     runs-on: windows-2025-vs2026
     timeout-minutes: 360
     defaults:

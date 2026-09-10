@@ -55,5 +55,7 @@
     "Telegram/SourceFiles/window/window_peer_menu.cpp": "4a03ba9ac0ef4f21db72f24bf817b3b1fb0ca5fa"
   },
   "patch_sha256": "fcf0a678b22e036a5cf8a91e9dc68de7366979b88a52db238813fbcfe2c95a31",
-  "edition": "two-stage-archive-20260909"
+  "edition": "public-build-20260910",
+  "visibility": "public",
+  "public_artifacts_authorized": true
 }
