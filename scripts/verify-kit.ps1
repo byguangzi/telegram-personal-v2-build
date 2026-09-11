@@ -17,7 +17,7 @@ foreach ($entry in $manifest.PSObject.Properties) {
     $actual = (Get-FileHash -LiteralPath (Join-Path $KitRoot $entry.Name) -Algorithm SHA256).Hash
     if ($actual -ne $entry.Value) { throw "构建包文件校验失败：$($entry.Name)。请重新解压完整 V2.2 包。" }
 }
-$patch = Join-Path $KitRoot 'tdesktop-7.2.5-personal-v2.2.patch'
+$patch = Join-Path $KitRoot $config.patch_file
 if ((Get-FileHash -LiteralPath $patch).Hash -ne $config.patch_sha256) { throw 'Patch SHA-256 mismatch.' }
 if ($Cloud) {
     if (-not $Source) { throw 'Cloud preflight needs a source directory.' }

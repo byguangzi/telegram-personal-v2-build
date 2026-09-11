@@ -1,0 +1,25 @@
+name: Follow official stable Telegram releases
+on:
+  schedule:
+    - cron: '23 */2 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+concurrency:
+  group: telegram-personal-follow
+  cancel-in-progress: false
+jobs:
+  follow:
+    if: github.repository == 'byguangzi/telegram-personal-v2-build' && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Check stable release and strictly validate patch before dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: python3 ci/follow_upstream.py

@@ -25,18 +25,39 @@ permissions:
 concurrency:
   group: telegram-personal-v22
   cancel-in-progress: false
-env:
-  SOURCE_COMMIT: 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955
-  SOURCE_VERSION: 7.2.5
 jobs:
+  plan:
+    if: github.event.repository.private == false && (github.repository_owner == github.actor || github.actor == 'github-actions[bot]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      source: ${{ steps.plan.outputs.source }}
+      version: ${{ steps.plan.outputs.version }}
+      dependency_run: ${{ steps.plan.outputs.dependency_run }}
+      dependency_artifact: ${{ steps.plan.outputs.dependency_artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUEST_COMMIT: ${{ inputs.kit_commit }}
+          REQUEST_DEPENDENCY_RUN: ${{ inputs.dependency_run_id }}
+          REQUEST_DEPENDENCY_ARTIFACT: ${{ inputs.dependency_artifact_id }}
+        run: python3 ci/plan_build.py
   dependencies:
     name: Stage 1 - Public dependencies
-    if: github.event_name == 'workflow_dispatch' && github.repository_owner == github.actor && github.event.repository.private == false && inputs.dependency_run_id == '' && inputs.dependency_artifact_id == ''
+    if: github.event_name == 'workflow_dispatch' && (github.repository_owner == github.actor || github.actor == 'github-actions[bot]') && github.event.repository.private == false && needs.plan.outputs.dependency_run == '' && needs.plan.outputs.dependency_artifact == ''
     runs-on: windows-2025-vs2026
     timeout-minutes: 360
     defaults:
       run:
         shell: pwsh
+    needs: plan
+    env:
+      SOURCE_COMMIT: ${{ needs.plan.outputs.source }}
+      SOURCE_VERSION: ${{ needs.plan.outputs.version }}
     outputs:
       drive: ${{ steps.storage.outputs.drive }}
       artifact: ${{ steps.upload-dependencies.outputs.artifact-id }}
@@ -59,7 +80,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: telegramdesktop/tdesktop
-          ref: 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955
+          ref: ${{ env.SOURCE_COMMIT }}
           submodules: recursive
           path: TBuild/tdesktop
           persist-credentials: false
@@ -67,7 +88,7 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\scripts\verify-kit.ps1" -Cloud -Source "$env:TBUILD\tdesktop" | Out-Null
           $version = Get-Content "$env:TBUILD\tdesktop\Telegram\SourceFiles\core\version.h" -Raw
-          if ($version -notmatch 'AppVersionStr = "7\.2\.5"') { throw 'Version mismatch.' }
+          if (-not $version.Contains(('AppVersionStr = "' + $env:SOURCE_VERSION + '"'))) { throw 'Version mismatch.' }
           python -m unittest discover -s "$env:GITHUB_WORKSPACE\tests" -p test_*.py
           if ($LASTEXITCODE -ne 0) { throw 'Secret parser regression tests failed.' }
       - name: Prepare official build metadata
@@ -149,22 +170,24 @@ jobs:
           path: dependency-transfer/
           compression-level: 0
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
       - name: Report dependency disk space
         if: always()
         run: '& "$env:GITHUB_WORKSPACE\ci\storage.ps1" -Mode Report'
   build:
     name: Stage 2 - Windows x64 Release
-    if: always() && !cancelled() && github.event_name == 'workflow_dispatch' && github.repository_owner == github.actor && github.event.repository.private == false && (needs.dependencies.result == 'success' || (needs.dependencies.result == 'skipped' && inputs.dependency_run_id != '' && inputs.dependency_artifact_id != ''))
+    if: always() && !cancelled() && github.event_name == 'workflow_dispatch' && (github.repository_owner == github.actor || github.actor == 'github-actions[bot]') && github.event.repository.private == false && (needs.dependencies.result == 'success' || (needs.dependencies.result == 'skipped' && needs.plan.outputs.dependency_run != '' && needs.plan.outputs.dependency_artifact != ''))
     runs-on: windows-2025-vs2026
     timeout-minutes: 360
     defaults:
       run:
         shell: pwsh
-    needs: dependencies
+    needs: [plan, dependencies]
     env:
-      DEPENDENCY_RUN_ID: ${{ inputs.dependency_run_id || github.run_id }}
-      DEPENDENCY_ARTIFACT_ID: ${{ inputs.dependency_artifact_id || needs.dependencies.outputs.artifact }}
+      SOURCE_COMMIT: ${{ needs.plan.outputs.source }}
+      SOURCE_VERSION: ${{ needs.plan.outputs.version }}
+      DEPENDENCY_RUN_ID: ${{ needs.plan.outputs.dependency_run || github.run_id }}
+      DEPENDENCY_ARTIFACT_ID: ${{ needs.plan.outputs.dependency_artifact || needs.dependencies.outputs.artifact }}
     steps:
       - name: Checkout V2.2 build kit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -210,7 +233,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: telegramdesktop/tdesktop
-          ref: 96db3c8aacdf9d56643ffb9ca3f2c8a7067fa955
+          ref: ${{ env.SOURCE_COMMIT }}
           submodules: recursive
           path: TBuild/tdesktop
           persist-credentials: false
@@ -218,7 +241,7 @@ jobs:
         run: |
           & "$env:GITHUB_WORKSPACE\scripts\verify-kit.ps1" -Cloud -Source "$env:TBUILD\tdesktop" | Out-Null
           $version = Get-Content "$env:TBUILD\tdesktop\Telegram\SourceFiles\core\version.h" -Raw
-          if ($version -notmatch 'AppVersionStr = "7\.2\.5"') { throw 'Version mismatch.' }
+          if (-not $version.Contains(('AppVersionStr = "' + $env:SOURCE_VERSION + '"'))) { throw 'Version mismatch.' }
           python -m unittest discover -s "$env:GITHUB_WORKSPACE\tests" -p test_*.py
           if ($LASTEXITCODE -ne 0) { throw 'Secret parser regression tests failed.' }
       - name: Prepare official build metadata
@@ -298,4 +321,24 @@ jobs:
           name: Telegram-Personal-v2.2
           path: artifact/
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 90
+  candidate:
+    name: Save candidate release for runtime acceptance
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: Telegram-Personal-v2.2
+          path: artifact/
+      - name: Publish draft only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/publish_candidate.py

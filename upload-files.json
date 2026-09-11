@@ -4,7 +4,7 @@
   "kit.json",
   "upload-files.json",
   "SHA256SUMS.json",
-  "tdesktop-7.2.5-personal-v2.2.patch",
+  "personal.patch",
   "scripts/verify-kit.ps1",
   "ci/ensure-atl.ps1",
   "ci/storage.ps1",
@@ -17,5 +17,10 @@
   "tests/test_dependencies.py",
   "tests/test_generator.py",
   "LICENSE",
-  "LEGAL"
+  "LEGAL",
+  "ci/follow_upstream.py",
+  "ci/plan_build.py",
+  ".github/workflows/follow-stable.yml",
+  "ci/publish_candidate.py",
+  "tests/test_follow.py"
 ]

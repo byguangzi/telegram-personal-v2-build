@@ -1,0 +1,1071 @@
+diff --git a/Telegram/SourceFiles/apiwrap.cpp b/Telegram/SourceFiles/apiwrap.cpp
+index d4aa981bbdf00de3f565bce8808a1fa7c33d219f..bcd29165714bbe2caa51b3f539ee2ae2064f87a7 100644
+--- a/Telegram/SourceFiles/apiwrap.cpp
++++ b/Telegram/SourceFiles/apiwrap.cpp
+@@ -6,6 +6,10 @@ For license and copyright information please follow this link:
+ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "apiwrap.h"
++#include <QtCore/QCoreApplication>
++#include <QtCore/QFile>
++#include <QtCore/QSaveFile>
++#include <QtWidgets/QMessageBox>
+ 
+ #include "api/api_authorizations.h"
+ #include "api/api_attached_stickers.h"
+@@ -199,6 +203,7 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
+ , _session(session)
+ , _messageDataResolveDelayed([=] { resolveMessageDatas(); })
+ , _webPagesTimer([=] { resolveWebPages(); })
++, _personalArchiveTimer([=] { syncPersonalArchive(); })
+ , _draftsSaveTimer([=] { saveDraftsToCloud(); })
+ , _featuredSetsReadTimer([=] { readFeaturedSets(); })
+ , _dialogsLoadState(std::make_unique<DialogsLoadState>())
+@@ -246,6 +251,8 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
+ 
+ 		_reactionsNotifySettings->reload();
+ 		setupSupportMode();
++        // Import archived users without waiting for the archive menu to be opened.
++        requestDialogs(_session->data().folder(Data::Folder::kId));
+ 	});
+ }
+ 
+@@ -478,7 +485,109 @@ void ApiWrap::savePinnedOrder(not_null<Data::SavedMessages*> saved) {
+ 	)).send();
+ }
+ 
++QString ApiWrap::personalArchivePath() const {
++    return QCoreApplication::applicationDirPath()
++        + u"/tdata/personal_archive_"_q + QString::number(_session->uniqueId()) + u".dat"_q;
++}
++
++void ApiWrap::personalArchiveWarning() {
++    if (_personalArchiveWarned) return;
++    _personalArchiveWarned = true;
++    crl::on_main(_session, [] {
++        QMessageBox::warning(nullptr, QString::fromUtf8("长期归档"),
++            QString::fromUtf8("无法读取或保存长期归档名单。请保留 tdata 并检查目录权限；不要删除名单文件。当前无法保证重启后规则有效。"));
++    });
++}
++
++void ApiWrap::loadPersonalArchive() {
++    if (_personalArchiveLoaded) return;
++    _personalArchiveLoaded = true;
++    auto file = QFile(personalArchivePath());
++    if (!file.exists()) return;
++    if (!file.open(QIODevice::ReadOnly) || file.size() > 16 * 1024 * 1024) {
++        _personalArchiveStorageOk = false;
++    } else {
++        const auto data = file.readAll();
++        _personalArchiveStorageOk = _personalArchiveRules.parse(
++            std::string_view(data.constData(), data.size()));
++    }
++    if (!_personalArchiveStorageOk) personalArchiveWarning();
++}
++
++bool ApiWrap::savePersonalArchive() {
++    if (!_personalArchiveStorageOk) { personalArchiveWarning(); return false; }
++    const auto data = _personalArchiveRules.serialize();
++    auto file = QSaveFile(personalArchivePath());
++    if (!file.open(QIODevice::WriteOnly)
++        || file.write(data.data(), qint64(data.size())) != qint64(data.size())
++        || !file.commit()) {
++        personalArchiveWarning();
++        return false;
++    }
++    return true;
++}
++
++bool ApiWrap::personalArchiveContains(PeerId peer) {
++    loadPersonalArchive();
++    return _personalArchiveRules.contains(peerToUser(peer).bare);
++}
++
++bool ApiWrap::personalArchiveSet(not_null<History*> history, bool enabled) {
++    if (!history->peer->isUser() || history->peer->isSelf()) return true;
++    loadPersonalArchive();
++    const auto before = _personalArchiveRules;
++    _personalArchiveRules.set(peerToUser(history->peer->id).bare, enabled);
++    if (!savePersonalArchive()) { _personalArchiveRules = before; return false; }
++    if (enabled) Core::App().notifications().clearFromHistory(history);
++    else _personalArchiveQueue.remove(history->peer->id);
++    return true;
++}
++
++bool ApiWrap::personalArchiveObserve(not_null<History*> history, bool archived) {
++    if (!history->peer->isUser() || history->peer->isSelf()) return false;
++    loadPersonalArchive();
++    const auto id = peerToUser(history->peer->id).bare;
++    if (archived && _personalArchiveRules.observe(id)) {
++        // Keep enforcement active this process if persistence fails; warn explicitly.
++        savePersonalArchive();
++        crl::on_main(_session, [=] { Core::App().notifications().clearFromHistory(history); });
++    }
++    const auto enforced = _personalArchiveRules.contains(id);
++    if (enforced && !archived) {
++        _personalArchiveQueue[history->peer->id] = true;
++        if (!_personalArchiveTimer.isActive()) _personalArchiveTimer.callOnce(1000);
++    }
++    return enforced;
++}
++
++void ApiWrap::syncPersonalArchive() {
++    if (_personalArchiveRetryAt > crl::now()) {
++        _personalArchiveTimer.callOnce(_personalArchiveRetryAt - crl::now());
++        return;
++    }
++    if (_personalArchiveQueue.empty()) return;
++    const auto [id, archived] = *_personalArchiveQueue.begin();
++    _personalArchiveQueue.remove(id);
++    const auto history = _session->data().historyLoaded(id);
++    // A deleted/absent dialog must not be recreated by background enforcement.
++    if (history && history->inChatList() && personalArchiveContains(id) == archived) {
++        if (_historyArchivedRequests.contains(history)) _personalArchiveQueue[id] = archived;
++        else sendHistoryArchived(history, archived, [] {});
++    }
++    if (!_personalArchiveQueue.empty()) _personalArchiveTimer.callOnce(1000);
++}
++
+ void ApiWrap::toggleHistoryArchived(
++        not_null<History*> history,
++        bool archived,
++        Fn<void()> callback) {
++    if (!personalArchiveSet(history, archived)) return;
++    if (archived) history->setFolder(_session->data().folder(Data::Folder::kId));
++    else history->clearFolder();
++    sendHistoryArchived(history, archived, std::move(callback));
++}
++
++void ApiWrap::sendHistoryArchived(
+ 		not_null<History*> history,
+ 		bool archived,
+ 		Fn<void()> callback) {
+@@ -506,8 +615,16 @@ void ApiWrap::toggleHistoryArchived(
+ 		if (isPinned) {
+ 			_session->data().notifyPinnedDialogsOrderUpdated();
+ 		}
+-	}).fail([=] {
+-		_historyArchivedRequests.remove(history);
++	}).fail([=](const MTP::Error &error) {
++        _historyArchivedRequests.remove(history);
++        if (history->peer->isUser() && personalArchiveContains(history->peer->id) == archived) {
++            const auto type = error.type();
++            const auto seconds = type.startsWith(u"FLOOD_WAIT_"_q)
++                ? std::max(30, type.mid(11).toInt() + 1) : 30;
++            _personalArchiveRetryAt = crl::now() + crl::time(seconds) * 1000;
++            _personalArchiveQueue[history->peer->id] = archived;
++            _personalArchiveTimer.callOnce(crl::time(seconds) * 1000);
++        }
+ 	}).send();
+ 	_historyArchivedRequests.emplace(history, requestId, callback);
+ }
+@@ -924,7 +1041,7 @@ void ApiWrap::requestMoreDialogs(Data::Folder *folder) {
+ 		return;
+ 	} else if (state->requestId) {
+ 		return;
+-	} else if (_dialogsLoadBlockedByDate.current()) {
++	} else if (!folder && _dialogsLoadBlockedByDate.current()) {
+ 		return;
+ 	}
+ 
+@@ -980,6 +1097,7 @@ void ApiWrap::requestMoreDialogs(Data::Folder *folder) {
+ 		}
+ 		requestMoreDialogsIfNeeded();
+ 		_session->data().chatsListChanged(folder);
++        if (folder) requestMoreDialogs(folder);
+ 	}).fail([=] {
+ 		dialogsLoadState(folder)->requestId = 0;
+ 	}).send();
+@@ -1016,9 +1134,8 @@ void ApiWrap::requestMoreDialogsIfNeeded() {
+ 		requestDialogs(nullptr);
+ 	} else if (const auto folder = _session->data().folderLoaded(
+ 			Data::Folder::kId)) {
+-		if (_session->data().chatsFilters().archiveNeeded()) {
+-			requestMoreDialogs(folder);
+-		}
++        // Import existing archived users even when no custom filter needs the archive.
++        requestMoreDialogs(folder);
+ 	}
+ 	requestContacts();
+ 	_session->data().shortcutMessages().preloadShortcuts();
+diff --git a/Telegram/SourceFiles/apiwrap.h b/Telegram/SourceFiles/apiwrap.h
+index 5660112e5d88549a3324fd1a3d69b63bee3bd3b6..dbcc18d6e400425b51ede0cf3f045207f4408426 100644
+--- a/Telegram/SourceFiles/apiwrap.h
++++ b/Telegram/SourceFiles/apiwrap.h
+@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #pragma once
+ 
+ #include "api/api_common.h"
++#include "core/personal_archive_rules.h"
+ #include "base/timer.h"
+ #include "mtproto/sender.h"
+ #include "data/stickers/data_stickers_set.h"
+@@ -151,6 +152,10 @@ public:
+ 
+ 	explicit ApiWrap(not_null<Main::Session*> session);
+ 	~ApiWrap();
++    [[nodiscard]] bool personalArchiveContains(PeerId peer);
++    [[nodiscard]] bool personalArchiveObserve(not_null<History*> history, bool archived);
++    bool personalArchiveSet(not_null<History*> history, bool enabled);
++
+ 
+ 	[[nodiscard]] Main::Session &session() const;
+ 	[[nodiscard]] Storage::Account &local() const;
+@@ -480,6 +485,12 @@ public:
+ 		PeerId fromPeerId);
+ 
+ private:
++    void loadPersonalArchive();
++    bool savePersonalArchive();
++    void syncPersonalArchive();
++    void sendHistoryArchived(not_null<History*> history, bool archived, Fn<void()> callback);
++    QString personalArchivePath() const;
++    void personalArchiveWarning();
+ 	struct MessageDataRequest {
+ 		using Callbacks = std::vector<Fn<void()>>;
+ 
+@@ -680,6 +691,14 @@ private:
+ 
+ 	base::flat_map<not_null<WebPageData*>, mtpRequestId> _webPagesPending;
+ 	base::Timer _webPagesTimer;
++    Core::PersonalArchiveRules _personalArchiveRules;
++    bool _personalArchiveLoaded = false;
++    bool _personalArchiveStorageOk = true;
++    bool _personalArchiveWarned = false;
++    base::flat_map<PeerId, bool> _personalArchiveQueue;
++    crl::time _personalArchiveRetryAt = 0;
++    base::Timer _personalArchiveTimer;
++
+ 
+ 	struct StickerSetRequest {
+ 		uint64 accessHash = 0;
+diff --git a/Telegram/SourceFiles/boxes/connection_box.cpp b/Telegram/SourceFiles/boxes/connection_box.cpp
+index 4e25824b57b0afb65b2086b6d32a2e34035f8cb7..fa4ca0f1ba28a340202ec7ba0e5739f1bc649d63 100644
+--- a/Telegram/SourceFiles/boxes/connection_box.cpp
++++ b/Telegram/SourceFiles/boxes/connection_box.cpp
+@@ -2212,10 +2212,9 @@ void ProxiesBoxController::refreshChecker(Item &item) {
+ object_ptr<Ui::BoxContent> ProxiesBoxController::CreateOwningBox(
+ 		not_null<Main::Account*> account,
+ 		const QString &highlightId) {
+-	auto controller = std::make_unique<ProxiesBoxController>(account);
+-	auto box = controller->create(highlightId);
+-	Ui::AttachAsChild(box, std::move(controller));
+-	return box;
++	Q_UNUSED(account);
++	Q_UNUSED(highlightId);
++	return Ui::MakeInformBox(u"此版本自动管理连接：启动时尝试内置 MTProto；连续 30 秒未连接则本次运行改用直连，下次启动重试。节点不显示，也不会保存为普通代理。"_q);
+ }
+ 
+ object_ptr<Ui::BoxContent> ProxiesBoxController::create(
+diff --git a/Telegram/SourceFiles/core/application.cpp b/Telegram/SourceFiles/core/application.cpp
+index acfdcfdfb1743255ee0669c85ff1fe02f1ded2f5..766e4f028b82b75cf6fa391871c8ebb630ab8a1c 100644
+--- a/Telegram/SourceFiles/core/application.cpp
++++ b/Telegram/SourceFiles/core/application.cpp
+@@ -894,16 +894,21 @@ void Application::constructFallbackProductionConfig(
+ void Application::setCurrentProxy(
+ 		const MTP::ProxyData &proxy,
+ 		MTP::ProxyData::Settings settings) {
+-	auto &my = _private->settings.proxy();
+-	const auto current = [&] {
+-		return my.isEnabled() ? my.selected() : MTP::ProxyData();
+-	};
+-	const auto was = current();
+-	my.setSelected(proxy);
+-	my.setSettings(settings);
+-	const auto now = current();
++	// This build has one fixed policy. UI/deep links cannot restart the
++	// hidden proxy or override the per-process direct fallback latch.
++	Q_UNUSED(proxy);
++	Q_UNUSED(settings);
++}
++
++void Application::fallbackPersonalProxy() {
++	auto &my = settings().proxy();
++	if (my.personalFallback()) {
++		return;
++	}
++	const auto was = my.selected();
++	my.fallbackPersonalProxy();
+ 	refreshGlobalProxy();
+-	_proxyChanges.fire({ was, now });
++	_proxyChanges.fire({ was, MTP::ProxyData() });
+ 	my.connectionTypeChangesNotify();
+ 	proxyRotationSettingsChanged();
+ }
+@@ -923,19 +928,7 @@ auto Application::proxyChanges() const -> rpl::producer<ProxyChange> {
+ }
+ 
+ void Application::badMtprotoConfigurationError() {
+-	if (settings().proxy().isEnabled() && !_badProxyDisableBox) {
+-		const auto disableCallback = [=] {
+-			setCurrentProxy(
+-				settings().proxy().selected(),
+-				MTP::ProxyData::Settings::System);
+-		};
+-		_badProxyDisableBox = Ui::show(
+-			Ui::MakeInformBox(Lang::Hard::ProxyConfigError()));
+-		_badProxyDisableBox->boxClosing(
+-		) | rpl::on_next(
+-			disableCallback,
+-			_badProxyDisableBox->lifetime());
+-	}
++	fallbackPersonalProxy();
+ }
+ 
+ void Application::startLocalStorage() {
+diff --git a/Telegram/SourceFiles/core/application.h b/Telegram/SourceFiles/core/application.h
+index 36789db9003b00468f40ca941fb24276050aea40..8c620cdc3f72a6d2d0a136e552f4e9c7b5b4bace 100644
+--- a/Telegram/SourceFiles/core/application.h
++++ b/Telegram/SourceFiles/core/application.h
+@@ -235,6 +235,7 @@ public:
+ 	void setCurrentProxy(
+ 		const MTP::ProxyData &proxy,
+ 		MTP::ProxyData::Settings settings);
++	void fallbackPersonalProxy();
+ 	void proxyRotationSettingsChanged();
+ 	void checkProxyRotation(not_null<Main::Account*> account, int32 state);
+ 	[[nodiscard]] rpl::producer<ProxyChange> proxyChanges() const;
+diff --git a/Telegram/SourceFiles/core/core_settings_proxy.cpp b/Telegram/SourceFiles/core/core_settings_proxy.cpp
+index 18e7ab8ce60865409dbaff267ee192e272622d26..0455373d6c178dfe7dd993250e9750e9f872d549 100644
+--- a/Telegram/SourceFiles/core/core_settings_proxy.cpp
++++ b/Telegram/SourceFiles/core/core_settings_proxy.cpp
+@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
+ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ */
+ #include "core/core_settings_proxy.h"
++#include "core/preconfigured_proxy_config.h"
+ 
+ #include "base/platform/base_platform_info.h"
+ #include "storage/serialize_common.h"
+@@ -112,13 +113,34 @@ std::vector<int> NormalizeProxyRotationPreferredIndices(
+ 
+ SettingsProxy::SettingsProxy()
+ : _tryIPv6(!Platform::IsWindows()) {
++	static_assert(PreconfiguredProxyConfig::kPort > 0);
++	static_assert(PreconfiguredProxyConfig::kPort <= 65535);
++	_personalProxy.type = MTP::ProxyData::Type::Mtproto;
++	_personalProxy.host = QString::fromUtf8(QByteArray::fromBase64(
++		PreconfiguredProxyConfig::kHostBase64));
++	_personalProxy.port = PreconfiguredProxyConfig::kPort;
++	_personalProxy.password = QString::fromUtf8(QByteArray::fromBase64(
++		PreconfiguredProxyConfig::kSecretBase64));
++	Assert(_personalProxy.valid());
+ }
+ 
+ QByteArray SettingsProxy::serialize() const {
+-	const auto serializedSelected = SerializeProxyData(_selected);
+-	const auto serializedList = ranges::views::all(
+-		_list
+-	) | ranges::views::transform(SerializeProxyData) | ranges::to_vector;
++	const auto serializedSelected = SerializeProxyData(
++		isPersonalProxy(_selected) ? MTP::ProxyData() : _selected);
++	auto serializedList = std::vector<QByteArray>();
++	auto indices = std::vector<int>(_list.size(), -1);
++	for (auto i = 0; i != int(_list.size()); ++i) {
++		if (!isPersonalProxy(_list[i])) {
++			indices[i] = int(serializedList.size());
++			serializedList.push_back(SerializeProxyData(_list[i]));
++		}
++	}
++	auto preferred = std::vector<int>();
++	for (const auto index : _proxyRotationPreferredIndices) {
++		if (index >= 0 && index < int(indices.size()) && indices[index] >= 0) {
++			preferred.push_back(indices[index]);
++		}
++	}
+ 
+ 	const auto size = 3 * sizeof(qint32)
+ 		+ Serialize::bytearraySize(serializedSelected)
+@@ -128,14 +150,15 @@ QByteArray SettingsProxy::serialize() const {
+ 			0,
+ 			ranges::plus(),
+ 			&Serialize::bytearraySize)
+-		+ (4 + int(_proxyRotationPreferredIndices.size())) * sizeof(qint32);
++		+ (4 + int(preferred.size())) * sizeof(qint32);
+ 	auto stream = Serialize::ByteArrayWriter(size);
+ 	stream
+ 		<< qint32(_tryIPv6 ? 1 : 0)
+ 		<< qint32(_useProxyForCalls ? 1 : 0)
+-		<< ProxySettingsToInt(_settings)
++		<< ProxySettingsToInt(isPersonalProxy(_selected)
++			? MTP::ProxyData::Settings::Disabled : _settings)
+ 		<< serializedSelected
+-		<< qint32(_list.size());
++		<< qint32(serializedList.size());
+ 	for (const auto &i : serializedList) {
+ 		stream << i;
+ 	}
+@@ -143,8 +166,8 @@ QByteArray SettingsProxy::serialize() const {
+ 		<< qint32(_checkIpWarningShown ? 1 : 0)
+ 		<< qint32(_proxyRotationEnabled ? 1 : 0)
+ 		<< qint32(_proxyRotationTimeout)
+-		<< qint32(_proxyRotationPreferredIndices.size());
+-	for (const auto index : _proxyRotationPreferredIndices) {
++		<< qint32(preferred.size());
++	for (const auto index : preferred) {
+ 		stream << qint32(index);
+ 	}
+ 	return std::move(stream).result();
+@@ -252,16 +275,20 @@ bool SettingsProxy::setFromSerialized(const QByteArray &serialized) {
+ 	return true;
+ }
+ 
++bool SettingsProxy::isPersonalProxy(const MTP::ProxyData &proxy) const {
++	return proxy == _personalProxy;
++}
++
+ bool SettingsProxy::isEnabled() const {
+-	return _settings == MTP::ProxyData::Settings::Enabled;
++	return !_personalFallback;
+ }
+ 
+ bool SettingsProxy::isSystem() const {
+-	return _settings == MTP::ProxyData::Settings::System;
++	return false;
+ }
+ 
+ bool SettingsProxy::isDisabled() const {
+-	return _settings == MTP::ProxyData::Settings::Disabled;
++	return _personalFallback;
+ }
+ 
+ bool SettingsProxy::checkIpWarningShown() const {
+@@ -315,7 +342,7 @@ void SettingsProxy::setUseProxyForCalls(bool value) {
+ }
+ 
+ bool SettingsProxy::proxyRotationEnabled() const {
+-	return _proxyRotationEnabled;
++	return false;
+ }
+ 
+ void SettingsProxy::setProxyRotationEnabled(bool value) {
+@@ -333,7 +360,9 @@ void SettingsProxy::setProxyRotationTimeout(int value) {
+ }
+ 
+ MTP::ProxyData::Settings SettingsProxy::settings() const {
+-	return _settings;
++	return _personalFallback
++		? MTP::ProxyData::Settings::Disabled
++		: MTP::ProxyData::Settings::Enabled;
+ }
+ 
+ void SettingsProxy::setSettings(MTP::ProxyData::Settings value) {
+@@ -341,11 +370,16 @@ void SettingsProxy::setSettings(MTP::ProxyData::Settings value) {
+ }
+ 
+ MTP::ProxyData SettingsProxy::selected() const {
+-	return _selected;
++	return _personalFallback ? MTP::ProxyData() : _personalProxy;
+ }
+ 
+ void SettingsProxy::setSelected(MTP::ProxyData value) {
+-	_selected = value;
++	if (isPersonalProxy(value)) {
++		// DNS resolution updates belong only to the runtime proxy.
++		_personalProxy = std::move(value);
++	} else {
++		_selected = std::move(value);
++	}
+ }
+ 
+ const std::vector<MTP::ProxyData> &SettingsProxy::list() const {
+diff --git a/Telegram/SourceFiles/core/core_settings_proxy.h b/Telegram/SourceFiles/core/core_settings_proxy.h
+index 1f2ec5c516e03ae49e80c15bb6083bffa7ec6d99..b53a50431708f077aeb010468e51133b7489ff0c 100644
+--- a/Telegram/SourceFiles/core/core_settings_proxy.h
++++ b/Telegram/SourceFiles/core/core_settings_proxy.h
+@@ -25,6 +25,9 @@ public:
+ 	static constexpr auto kDefaultProxyRotationTimeout = 10;
+ 
+ 	SettingsProxy();
++	[[nodiscard]] bool personalFallback() const { return _personalFallback; }
++	void fallbackPersonalProxy() { _personalFallback = true; }
++	[[nodiscard]] bool isPersonalProxy(const MTP::ProxyData &proxy) const;
+ 
+ 	[[nodiscard]] bool isEnabled() const;
+ 	[[nodiscard]] bool isSystem() const;
+@@ -74,6 +77,9 @@ public:
+ 	bool setFromSerialized(const QByteArray &serialized);
+ 
+ private:
++	// Runtime-only: never passed to the stock tdata serializer.
++	MTP::ProxyData _personalProxy;
++	bool _personalFallback = false;
+ 	bool _tryIPv6 = false;
+ 	bool _useProxyForCalls = false;
+ 	bool _proxyRotationEnabled = false;
+diff --git a/Telegram/SourceFiles/core/launcher.cpp b/Telegram/SourceFiles/core/launcher.cpp
+index b3b76e088fb5ded83299fe1ae47c5ee5dd7e1a62..088c6c63c478f45a419f9d3f75af3047070329da 100644
+--- a/Telegram/SourceFiles/core/launcher.cpp
++++ b/Telegram/SourceFiles/core/launcher.cpp
+@@ -238,7 +238,7 @@ bool MoveLegacyAlphaFolder(const QString &folder, const QString &file) {
+ 	return true;
+ }
+ 
+-bool MoveLegacyAlphaFolder() {
++[[maybe_unused]] bool MoveLegacyAlphaFolder() {
+ 	if (!MoveLegacyAlphaFolder(u"TelegramAlpha_data"_q, u"alpha"_q)
+ 		|| !MoveLegacyAlphaFolder(u"TelegramBeta_data"_q, u"beta"_q)) {
+ 		return false;
+@@ -247,58 +247,8 @@ bool MoveLegacyAlphaFolder() {
+ }
+ 
+ bool CheckPortableVersionFolder() {
+-	if (!MoveLegacyAlphaFolder()) {
+-		return false;
+-	}
+-
+-	const auto portable = cExeDir() + u"TelegramForcePortable"_q;
+-	QFile key(portable + u"/tdata/alpha"_q);
+-	if (cAlphaVersion()) {
+-		Assert(*AlphaPrivateKey != 0);
+-
+-		cForceWorkingDir(portable);
+-		QDir().mkpath(cWorkingDir() + u"tdata"_q);
+-		cSetAlphaPrivateKey(QByteArray(AlphaPrivateKey));
+-		if (!key.open(QIODevice::WriteOnly)) {
+-			LOG(("FATAL: Could not open '%1' for writing private key!"
+-				).arg(key.fileName()));
+-			return false;
+-		}
+-		QDataStream dataStream(&key);
+-		dataStream.setVersion(QDataStream::Qt_5_3);
+-		dataStream << quint64(cRealAlphaVersion()) << cAlphaPrivateKey();
+-		return true;
+-	}
+-	if (!QDir(portable).exists()) {
+-		return true;
+-	}
+-	cForceWorkingDir(portable);
+-	if (!key.exists()) {
+-		return true;
+-	}
+-
+-	if (!key.open(QIODevice::ReadOnly)) {
+-		LOG(("FATAL: could not open '%1' for reading private key. "
+-			"Delete it or reinstall private alpha version."
+-			).arg(key.fileName()));
+-		return false;
+-	}
+-	QDataStream dataStream(&key);
+-	dataStream.setVersion(QDataStream::Qt_5_3);
+-
+-	quint64 v;
+-	QByteArray k;
+-	dataStream >> v >> k;
+-	if (dataStream.status() != QDataStream::Ok || k.isEmpty()) {
+-		LOG(("FATAL: '%1' is corrupted. "
+-			"Delete it or reinstall private alpha version."
+-			).arg(key.fileName()));
+-		return false;
+-	}
+-	cSetAlphaVersion(AppVersion * 1000ULL);
+-	cSetAlphaPrivateKey(k);
+-	cSetRealAlphaVersion(v);
+-	return true;
++	cForceWorkingDir(cExeDir());
++	return QDir().mkpath(cWorkingDir() + u"tdata"_q);
+ }
+ 
+ base::options::toggle OptionFractionalScalingEnabled({
+@@ -444,14 +394,8 @@ int Launcher::exec() {
+ }
+ 
+ bool Launcher::validateCustomWorkingDir() {
+-	if (customWorkingDir()) {
+-		if (_customWorkingDir == cWorkingDir()) {
+-			_customWorkingDir = QString();
+-			return false;
+-		}
+-		cForceWorkingDir(_customWorkingDir);
+-		return true;
+-	}
++	_customWorkingDir = QString();
++	cForceWorkingDir(cExeDir());
+ 	return false;
+ }
+ 
+diff --git a/Telegram/SourceFiles/core/personal_archive_rules.h b/Telegram/SourceFiles/core/personal_archive_rules.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..2a0417995243126b9b6be60e0a27445a7f5fd639
+--- /dev/null
++++ b/Telegram/SourceFiles/core/personal_archive_rules.h
+@@ -0,0 +1,55 @@
++#pragma once
++
++#include <charconv>
++#include <cstdint>
++#include <set>
++#include <string>
++#include <string_view>
++#include <utility>
++
++namespace Core {
++
++// One instance/file per signed-in account. Never keyed by mutable usernames.
++class PersonalArchiveRules final {
++public:
++    bool contains(std::uint64_t id) const { return _archived.count(id) != 0; }
++    bool observe(std::uint64_t id) {
++        return id && !_released.count(id) && _archived.insert(id).second;
++    }
++    void set(std::uint64_t id, bool enabled) {
++        if (!id) return;
++        if (enabled) { _released.erase(id); _archived.insert(id); }
++        else { _archived.erase(id); _released.insert(id); }
++    }
++    std::string serialize() const {
++        auto result = std::string("PERSONAL_ARCHIVE_1\n");
++        for (auto id : _archived) result += "A" + std::to_string(id) + "\n";
++        for (auto id : _released) result += "R" + std::to_string(id) + "\n";
++        return result;
++    }
++    bool parse(std::string_view data) {
++        constexpr auto header = std::string_view("PERSONAL_ARCHIVE_1\n");
++        if (data.size() > 16 * 1024 * 1024 || data.substr(0, header.size()) != header) return false;
++        data.remove_prefix(header.size());
++        PersonalArchiveRules parsed;
++        while (!data.empty()) {
++            auto end = data.find('\n');
++            if (end == std::string_view::npos || end < 2 || (data[0] != 'A' && data[0] != 'R')) return false;
++            std::uint64_t id = 0;
++            const auto number = data.substr(1, end - 1);
++            const auto decoded = std::from_chars(number.data(), number.data() + number.size(), id);
++            if (decoded.ec != std::errc() || decoded.ptr != number.data() + number.size() || !id
++                || parsed._archived.count(id) || parsed._released.count(id)) return false;
++            (data[0] == 'A' ? parsed._archived : parsed._released).insert(id);
++            data.remove_prefix(end + 1);
++        }
++        *this = std::move(parsed);
++        return true;
++    }
++private:
++    std::set<std::uint64_t> _archived;
++    // Prevent an old server archive update from undoing an explicit release.
++    std::set<std::uint64_t> _released;
++};
++
++} // namespace Core
+diff --git a/Telegram/SourceFiles/core/personal_proxy_policy.h b/Telegram/SourceFiles/core/personal_proxy_policy.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..e2a06c229419bfb1fd8584e769a524ca6c2d9e99
+--- /dev/null
++++ b/Telegram/SourceFiles/core/personal_proxy_policy.h
+@@ -0,0 +1,42 @@
++#pragma once
++#include <cstdint>
++
++namespace Core {
++
++// No persisted state. A new process constructs a fresh policy.
++class PersonalProxyPolicy final {
++public:
++	enum class State { Waiting, Trying, ProxyConnected, Direct, DirectConnected };
++	static constexpr std::int64_t kTimeout = 30000;
++	State update(std::int64_t now, bool ready, bool connected, bool direct) {
++		_fallback = _fallback || direct;
++		if (_fallback) {
++			return connected ? State::DirectConnected : State::Direct;
++		}
++		if (!ready) {
++			_disconnectedAt = -1;
++			return State::Waiting;
++		}
++		if (connected) {
++			_everConnected = true;
++			_disconnectedAt = -1;
++			return State::ProxyConnected;
++		}
++		if (_disconnectedAt < 0) {
++			_disconnectedAt = now;
++		}
++		if (now - _disconnectedAt >= kTimeout) {
++			_fallback = true;
++			return State::Direct;
++		}
++		return State::Trying;
++	}
++	bool fallback() const { return _fallback; }
++	bool everConnected() const { return _everConnected; }
++private:
++	std::int64_t _disconnectedAt = -1;
++	bool _fallback = false;
++	bool _everConnected = false;
++};
++
++} // namespace Core
+diff --git a/Telegram/SourceFiles/core/preconfigured_proxy_config.h b/Telegram/SourceFiles/core/preconfigured_proxy_config.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..65b6d3d8cdbdffedbbb1dd225160c256bbedfbf1
+--- /dev/null
++++ b/Telegram/SourceFiles/core/preconfigured_proxy_config.h
+@@ -0,0 +1,6 @@
++#pragma once
++namespace Core::PreconfiguredProxyConfig {
++inline constexpr auto kHostBase64 = "";
++inline constexpr auto kSecretBase64 = "";
++inline constexpr auto kPort = 0;
++} // namespace Core::PreconfiguredProxyConfig
+diff --git a/Telegram/SourceFiles/core/proxy_rotation_manager.cpp b/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
+index 72723d4db408be654dbf68e1ac40bba21c59d4e6..99bb1182018d6584db52732097dc90dd07d2fd84 100644
+--- a/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
++++ b/Telegram/SourceFiles/core/proxy_rotation_manager.cpp
+@@ -14,6 +14,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #include "mtproto/facade.h"
+ 
+ #include <algorithm>
++#include <QtCore/QCoreApplication>
++#include <QtCore/QSaveFile>
+ 
+ namespace Core {
+ namespace {
+@@ -25,8 +27,10 @@ constexpr auto kProxyRotationMaxActiveChecks = 10;
+ } // namespace
+ 
+ ProxyRotationManager::ProxyRotationManager()
+-: _checkTimer([=] { runChecks(); })
++: _personalTimer([=] { personalTick(); })
++, _checkTimer([=] { runChecks(); })
+ , _switchTimer([=] { switchTimerDone(); }) {
++	_personalTimer.callOnce(1000);
+ 	App().domain().accountsChanges(
+ 	) | rpl::on_next([=] {
+ 		stopChecking();
+@@ -34,6 +38,51 @@ ProxyRotationManager::ProxyRotationManager()
+ 	}, _lifetime);
+ }
+ 
++void ProxyRotationManager::personalTick() {
++	auto ready = false;
++	auto connected = false;
++	for (const auto &entry : App().domain().accounts()) {
++		const auto account = entry.account.get();
++		if (!account->mtpStarted() || account->mtp().isTestMode()) {
++			continue;
++		}
++		// Includes the unauthenticated login screen, not just sessions.
++		ready = true;
++		connected = connected || account->mtp().dcstate() == MTP::ConnectedState;
++	}
++	const auto state = _personalPolicy.update(
++		crl::now(), ready, connected, App().settings().proxy().personalFallback());
++	if (_personalPolicy.fallback()) {
++		App().fallbackPersonalProxy();
++	}
++	const auto text = [&] {
++		using State = PersonalProxyPolicy::State;
++		switch (state) {
++		case State::Waiting: return "waiting_for_account";
++		case State::Trying: return "trying_mtproto";
++		case State::ProxyConnected: return "mtproto_connected";
++		case State::Direct: return "fallback_direct";
++		case State::DirectConnected: return "direct_connected";
++		}
++		Unexpected("Personal proxy state");
++	}();
++	const auto data = QByteArray("status=") + text
++		+ "\npid=" + QByteArray::number(QCoreApplication::applicationPid())
++		+ "\nmtproto_ever_connected=" + (_personalPolicy.everConnected() ? "1" : "0")
++		+ "\nfallback_latched=" + (_personalPolicy.fallback() ? "1" : "0")
++		+ "\n";
++	if (data != _personalLastState) {
++		auto file = QSaveFile(QCoreApplication::applicationDirPath()
++			+ u"/tdata/personal_proxy_state.txt"_q);
++		if (file.open(QIODevice::WriteOnly)
++			&& file.write(data) == data.size()
++			&& file.commit()) {
++			_personalLastState = data;
++		}
++	}
++	_personalTimer.callOnce(1000);
++}
++
+ void ProxyRotationManager::settingsChanged() {
+ 	stopChecking();
+ 	pruneRemovedEntries();
+diff --git a/Telegram/SourceFiles/core/proxy_rotation_manager.h b/Telegram/SourceFiles/core/proxy_rotation_manager.h
+index c1fee276961c4f98e21ab2a8e495a1d687672804..335615f8d08421f179862ff16f0f6c7f9344d5a9 100644
+--- a/Telegram/SourceFiles/core/proxy_rotation_manager.h
++++ b/Telegram/SourceFiles/core/proxy_rotation_manager.h
+@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
+ #pragma once
+ 
+ #include "base/timer.h"
++#include "core/personal_proxy_policy.h"
+ #include "mtproto/proxy_check.h"
+ 
+ #include <rpl/lifetime.h>
+@@ -65,6 +66,10 @@ private:
+ 	[[nodiscard]] bool switchToAvailable();
+ 	[[nodiscard]] bool shouldSwitchToAvailable() const;
+ 
++	void personalTick();
++	base::Timer _personalTimer;
++	PersonalProxyPolicy _personalPolicy;
++	QByteArray _personalLastState;
+ 	base::Timer _checkTimer;
+ 	base::Timer _switchTimer;
+ 	std::vector<Entry> _entries;
+diff --git a/Telegram/SourceFiles/history/history.cpp b/Telegram/SourceFiles/history/history.cpp
+index e6225f531e8942aed6b7c3acc6b7a28028717062..5fc647f067e3771e50bd0863c4978d61016d6b3e 100644
+--- a/Telegram/SourceFiles/history/history.cpp
++++ b/Telegram/SourceFiles/history/history.cpp
+@@ -2455,6 +2455,10 @@ void History::clearFolder() {
+ }
+ 
+ void History::setFolderPointer(Data::Folder *folder) {
++    // Enforce before insertion into a visible chat list, not after a UI flash.
++    if (session().api().personalArchiveObserve(this, folder != nullptr)) {
++        folder = owner().folder(Data::Folder::kId);
++    }
+ 	if (_folder == folder) {
+ 		return;
+ 	}
+@@ -3084,6 +3088,11 @@ void History::setLastServerMessage(HistoryItem *item) {
+ }
+ 
+ void History::setLastMessage(HistoryItem *item) {
++    if (item && !inChatList() && session().api().personalArchiveContains(peer->id)) {
++        // Recreated dialogs also need enforcement when their old folder was cached.
++        (void)session().api().personalArchiveObserve(this, false);
++        setFolderPointer(owner().folder(Data::Folder::kId));
++    }
+ 	if (_lastMessage && *_lastMessage == item) {
+ 		return;
+ 	}
+diff --git a/Telegram/SourceFiles/logs.cpp b/Telegram/SourceFiles/logs.cpp
+index 451ee22c87d5dd723dbcc141f792dde39740c231..07316d71127fb54c554089ae1a7c3605d4a403ed 100644
+--- a/Telegram/SourceFiles/logs.cpp
++++ b/Telegram/SourceFiles/logs.cpp
+@@ -50,7 +50,7 @@ QMutex *_logsMutex(LogDataType type, bool clear = false) {
+ }
+ 
+ QString _logsFilePath(LogDataType type, const QString &postfix = QString()) {
+-	QString path(cWorkingDir());
++	QString path(cWorkingDir() + u"tdata/"_q);
+ 	switch (type) {
+ 	case LogDataMain: path += u"log"_q + postfix + u".txt"_q; break;
+ 	case LogDataDebug: path += u"DebugLogs/log"_q + postfix + u".txt"_q; break;
+@@ -176,10 +176,10 @@ private:
+ 
+ 				LogsStartIndexChosen = -1;
+ 
+-				QDir working(cWorkingDir()); // delete all other log_startXX.txt that we can
++				QDir working(cWorkingDir() + u"tdata/"_q); // delete all other log_startXX.txt that we can
+ 				QStringList oldlogs = working.entryList(QStringList("log_start*.txt"), QDir::Files);
+ 				for (QStringList::const_iterator i = oldlogs.cbegin(), e = oldlogs.cend(); i != e; ++i) {
+-					QString oldlog = cWorkingDir() + *i, oldlogend = i->mid(u"log_start"_q.size());
++					QString oldlog = cWorkingDir() + u"tdata/"_q + *i, oldlogend = i->mid(u"log_start"_q.size());
+ 					if (oldlogend.size() == 1 + u".txt"_q.size() && oldlogend.at(0).isDigit() && base::StringViewMid(oldlogend, 1) == u".txt"_q) {
+ 						bool removed = QFile(oldlog).remove();
+ 						LOG(("Old start log '%1' found, deleted: %2").arg(*i, Logs::b(removed)));
+@@ -220,7 +220,7 @@ private:
+ 					files[type]->close();
+ 				}
+ 			} else {
+-				QDir().mkdir(cWorkingDir() + u"DebugLogs"_q);
++				QDir().mkdir(cWorkingDir() + u"tdata/DebugLogs"_q);
+ 			}
+ 		}
+ 		if (files[type]->open(mode)) {
+@@ -270,6 +270,11 @@ LogsInMemoryList *DeletedLogsInMemory = SharedMemoryLocation<LogsInMemoryList, 0
+ QString LogsBeforeSingleInstanceChecked; // LogsInMemory already dumped in LogsData, but LogsData is about to be deleted
+ 
+ void _logsWrite(LogDataType type, const QString &msg) {
++	// Only the fixed-vocabulary personal state file is diagnostic output.
++	// Keep the stock log lifecycle, but do not persist arbitrary entries.
++	if (!msg.startsWith(u"[personal-status-only]"_q)) {
++		return;
++	}
+ 	if (LogsData && (type == LogDataMain || LogsStartIndexChosen < 0)) {
+ 		if (type == LogDataMain || Logs::DebugEnabled()) {
+ 			LogsData->write(type, msg);
+@@ -341,7 +346,8 @@ bool DebugModeEnabled = false;
+ } // namespace
+ 
+ void SetDebugEnabled(bool enabled) {
+-	DebugModeEnabled = enabled;
++	Q_UNUSED(enabled);
++	DebugModeEnabled = false;
+ }
+ 
+ bool DebugEnabled() {
+diff --git a/Telegram/SourceFiles/main/main_account.h b/Telegram/SourceFiles/main/main_account.h
+index eb05f1b40489aea6278eb8225006023af6c73cea..42c6d4bb07ba23d4269c9ecff477e6c008124029 100644
+--- a/Telegram/SourceFiles/main/main_account.h
++++ b/Telegram/SourceFiles/main/main_account.h
+@@ -79,6 +79,7 @@ public:
+ 	[[nodiscard]] rpl::producer<Session*> sessionValue() const;
+ 	[[nodiscard]] rpl::producer<Session*> sessionChanges() const;
+ 
++	[[nodiscard]] bool mtpStarted() const { return _mtp != nullptr; }
+ 	[[nodiscard]] MTP::Instance &mtp() const {
+ 		return *_mtp;
+ 	}
+diff --git a/Telegram/SourceFiles/main/main_session_settings.cpp b/Telegram/SourceFiles/main/main_session_settings.cpp
+index 7597c5d570e67f7077f70660842cf37595c8b1df..8c082f6acf75ee50c47b00e44b868083542c6dcc 100644
+--- a/Telegram/SourceFiles/main/main_session_settings.cpp
++++ b/Telegram/SourceFiles/main/main_session_settings.cpp
+@@ -782,7 +782,7 @@ void SessionSettings::addFromSerialized(const QByteArray &serialized) {
+ 	_hadLegacyCallsPeerToPeerNobody = (legacyCallsPeerToPeer == kLegacyCallsPeerToPeerNobody);
+ 	_supportAllSearchResults = (supportAllSearchResults == 1);
+ 	_archiveCollapsed = (archiveCollapsed == 1);
+-	_archiveInMainMenu = (archiveInMainMenu == 1);
++	_archiveInMainMenu = true; // Personal build: archive entry always lives in the menu.
+ 	_hiddenPinnedMessages = std::move(hiddenPinnedMessages);
+ 	_dialogsFiltersEnabled = (dialogsFiltersEnabled == 1);
+ 	_supportAllSilent = (supportAllSilent == 1);
+@@ -896,8 +896,8 @@ rpl::producer<bool> SessionSettings::archiveCollapsedChanges() const {
+ 	return _archiveCollapsed.changes();
+ }
+ 
+-void SessionSettings::setArchiveInMainMenu(bool inMainMenu) {
+-	_archiveInMainMenu = inMainMenu;
++void SessionSettings::setArchiveInMainMenu(bool) {
++    _archiveInMainMenu = true;
+ }
+ 
+ bool SessionSettings::archiveInMainMenu() const {
+diff --git a/Telegram/SourceFiles/main/main_session_settings.h b/Telegram/SourceFiles/main/main_session_settings.h
+index 3940a64322f4a754cc5625c42d28205ee39610c1..6cf48c86b0554c3894fc31cd4b4386187d7cc34a 100644
+--- a/Telegram/SourceFiles/main/main_session_settings.h
++++ b/Telegram/SourceFiles/main/main_session_settings.h
+@@ -219,7 +219,7 @@ private:
+ 	bool _hadLegacyCallsPeerToPeerNobody = false;
+ 	Data::AutoDownload::Full _autoDownload;
+ 	rpl::variable<bool> _archiveCollapsed = false;
+-	rpl::variable<bool> _archiveInMainMenu = false;
++	rpl::variable<bool> _archiveInMainMenu = true;
+ 	base::flat_map<ThreadId, MsgId> _hiddenPinnedMessages;
+ 	base::flat_map<PeerId, qint32> _subsectionTabsModes;
+ 	base::flat_map<Data::DefaultNotify, ushort> _ringtoneDefaultVolumes;
+diff --git a/Telegram/SourceFiles/window/notifications_manager.cpp b/Telegram/SourceFiles/window/notifications_manager.cpp
+index 25de977db87b73719163ab9ed4f5017cf51a74a1..194d919e064705f843f28a38bc03b0e0cc2af70a 100644
+--- a/Telegram/SourceFiles/window/notifications_manager.cpp
++++ b/Telegram/SourceFiles/window/notifications_manager.cpp
+@@ -161,6 +161,9 @@ base::options::toggle HideReplyButtonOption({
+ [[nodiscard]] std::optional<DocumentId> MaybeSoundFor(
+ 		not_null<Data::Thread*> thread,
+ 		PeerData *from) {
++    if (thread->session().api().personalArchiveContains(thread->peer()->id)) {
++        return std::nullopt;
++    }
+ 	const auto notifySettings = &thread->owner().notifySettings();
+ 	const auto threadUnknown = notifySettings->muteUnknown(thread);
+ 	const auto threadAlert = !threadUnknown
+@@ -315,6 +318,9 @@ System::SkipState System::skipNotification(
+ 	const auto type = notification.type;
+ 	const auto messageType = (type == Data::ItemNotificationType::Message);
+ 	const auto thread = item->maybeNotificationThread();
++    if (item->history()->session().api().personalArchiveContains(item->history()->peer->id)) {
++        return { SkipState::Skip };
++    }
+ 	if (!thread
+ 		|| !thread->currentNotification()
+ 		|| (messageType && item->skipNotification())
+@@ -332,6 +338,9 @@ System::SkipState System::computeSkipState(
+ 	const auto type = notification.type;
+ 	const auto item = notification.item;
+ 	const auto thread = item->notificationThread();
++    if (item->history()->session().api().personalArchiveContains(item->history()->peer->id)) {
++        return { SkipState::Skip };
++    }
+ 	const auto notifySettings = &thread->owner().notifySettings();
+ 	const auto messageType = (type == Data::ItemNotificationType::Message);
+ 	const auto withSilent = [&](
+@@ -686,6 +695,14 @@ void System::showGrouped() {
+ 
+ 	if (const auto session = findSession(_lastHistorySessionId)) {
+ 		if (const auto lastItem = session->data().message(_lastHistoryItemId)) {
++            if (session->api().personalArchiveContains(lastItem->history()->peer->id)) {
++                _waitForAllGroupedTimer.cancel();
++                _lastForwardedCount = 0;
++                _lastHistoryItemId = FullMsgId();
++                _lastHistorySessionId = 0;
++                _lastSoundId = {};
++                return;
++            }
+ 			_waitForAllGroupedTimer.cancel();
+ 			_manager->showNotification({
+ 				.item = lastItem,
+@@ -841,6 +858,10 @@ void System::showNext() {
+ 			break;
+ 		}
+ 		const auto notifyItem = notify->item;
++        if (notifyItem->history()->session().api().personalArchiveContains(notifyItem->history()->peer->id)) {
++            clearFromHistory(notifyItem->history());
++            return;
++        }
+ 		const auto notifySilent = computeSkipState(*notify).silent;
+ 		const auto messageType = (notify->type
+ 			== Data::ItemNotificationType::Message);
+diff --git a/Telegram/SourceFiles/window/window_connecting_widget.cpp b/Telegram/SourceFiles/window/window_connecting_widget.cpp
+index ba50aef7f530d023120672d65df3146e8b59712f..434d146ebb0d6d68f8997fcf7b75c78e70594a1f 100644
+--- a/Telegram/SourceFiles/window/window_connecting_widget.cpp
++++ b/Telegram/SourceFiles/window/window_connecting_widget.cpp
+@@ -443,8 +443,7 @@ auto ConnectionState::computeLayout(const State &state) const -> Layout {
+ 	result.progressShown = (state.type != State::Type::Connected);
+ 	result.visible = state.exposed
+ 		&& !state.updateReady
+-		&& (state.useProxy
+-			|| state.type == State::Type::Connecting
++		&& (state.type == State::Type::Connecting
+ 			|| state.type == State::Type::Waiting);
+ 	switch (state.type) {
+ 	case State::Type::Connecting:
+@@ -504,6 +503,7 @@ ConnectionState::Widget::Widget(
+ , _account(account)
+ , _currentLayout(layout) {
+ 	_proxyIcon = Ui::CreateChild<ProxyIcon>(this);
++	_proxyIcon->hide();
+ 	_progress = Ui::CreateChild<Progress>(this);
+ 
+ 	addClickHandler([=] {
+diff --git a/Telegram/SourceFiles/window/window_peer_menu.cpp b/Telegram/SourceFiles/window/window_peer_menu.cpp
+index a96e476eea36de3241bec1a6e7422179ed8f0a75..124552ed21ec41752d163509f3142beef0774680 100644
+--- a/Telegram/SourceFiles/window/window_peer_menu.cpp
++++ b/Telegram/SourceFiles/window/window_peer_menu.cpp
+@@ -837,12 +837,16 @@ void Filler::addToggleArchive() {
+ 		return IsArchived(history);
+ 	};
+ 	const auto label = [=] {
++        if (history->session().api().personalArchiveContains(peer->id)) {
++            return QString::fromUtf8("取消长期归档");
++        }
+ 		return isArchived()
+ 			? tr::lng_archived_remove(tr::now)
+ 			: tr::lng_archived_add(tr::now);
+ 	};
+ 	const auto toggle = [=, show = _controller->uiShow()] {
+-		ToggleHistoryArchived(show, history, !isArchived());
++        const auto locked = history->session().api().personalArchiveContains(peer->id);
++        ToggleHistoryArchived(show, history, !(locked || isArchived()));
+ 	};
+ 	const auto archiveAction = _addAction(
+ 		label(),
+@@ -2040,25 +2044,7 @@ void Filler::fillArchiveActions() {
+ 				controller->session().saveSettingsDelayed();
+ 			}, hidden ? &st::menuIconExpand : &st::menuIconCollapse);
+ 		}
+-		{
+-			const auto text = inmenu
+-				? tr::lng_context_archive_to_list(tr::now)
+-				: tr::lng_context_archive_to_menu(tr::now);
+-			_addAction(text, [=] {
+-				if (!inmenu) {
+-					controller->showToast({
+-						.text = {
+-							tr::lng_context_archive_to_menu_info(tr::now)
+-						},
+-						.st = &st::windowArchiveToast,
+-						.duration = kArchivedToastDuration,
+-					});
+-				}
+-				controller->session().settings().setArchiveInMainMenu(!inmenu);
+-				controller->session().saveSettingsDelayed();
+-				controller->window().hideSettingsAndLayer();
+-			}, inmenu ? &st::menuIconFromMainMenu : &st::menuIconToMainMenu);
+-		}
++		// Personal build keeps the archive entry in the main menu.
+ 
+ 		MarkAsReadMenu::AddChatListAction(
+ 			controller,
