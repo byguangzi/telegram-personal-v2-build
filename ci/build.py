@@ -19,11 +19,12 @@ def report_memory():
                   status.available/gib, status.physical/gib,
                   status.commit_available/gib, status.commit_limit/gib), flush=True)
 
-# MSBuild project parallelism and CL source-file parallelism are separate.
-# _CL_ is appended after generated project options, overriding an upstream /MP.
-os.environ['_CL_'] = (os.environ.get('_CL_', '') + ' /MP1').strip()
-os.environ['CMAKE_BUILD_PARALLEL_LEVEL'] = '1'
-print('Build resource policy: one MSBuild project, /MP1, x64 compiler host.', flush=True)
+from build_tuning import (available_memory, select_workers, configure_workers,
+                          resource_error, build_command)
+physical, commit = available_memory()
+workers = select_workers(os.environ.get('BUILD_MODE', 'auto'), os.cpu_count(), physical, commit)
+configure_workers(workers)
+print('Build scheduling: one MSBuild project, /MP%d; feature/compiler optimization flags unchanged.' % workers, flush=True)
 
 root = pathlib.Path(os.environ['TBUILD']) / 'tdesktop'
 kit = pathlib.Path(os.environ['GITHUB_WORKSPACE'])
@@ -46,7 +47,7 @@ redactions = sorted(redactions,key=len,reverse=True)
 def redact(text):
     for value in redactions: text=text.replace(value,'[REDACTED]')
     return text
-def run(args,cwd):
+def run(args,cwd,allow_failure=False):
     report_memory()
     process=subprocess.Popen(args,cwd=cwd,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
                              encoding='utf-8',errors='replace')
@@ -55,14 +56,18 @@ def run(args,cwd):
         while not stopped.wait(60): report_memory()
     watcher = threading.Thread(target=monitor, daemon=True)
     watcher.start()
+    resource_failure = False
     try:
-        for line in process.stdout: print(redact(line),end='',flush=True)
+        for line in process.stdout:
+            resource_failure = resource_failure or resource_error(line)
+            print(redact(line),end='',flush=True)
         result = process.wait()
     finally:
         stopped.set()
         watcher.join()
         report_memory()
-    if result: raise SystemExit('Build command failed; actual redacted output is above.')
+    if result and not allow_failure: raise SystemExit('Build command failed; actual redacted output is above.')
+    return result, resource_failure
 run([sys.executable,'configure.py','x64',
      '-D',f'TDESKTOP_API_ID={api_id}','-D',f'TDESKTOP_API_HASH={api_hash}',
      '-D','CMAKE_CONFIGURATION_TYPES=Release',
@@ -75,7 +80,11 @@ def cache_value(name):
     return m.group(1).strip() if m else None
 for name,value in (('CMAKE_CONFIGURATION_TYPES','Release'),('DESKTOP_APP_DISABLE_AUTOUPDATE','ON'),('DESKTOP_APP_DISABLE_CRASH_REPORTS','ON')):
     if cache_value(name)!=value: raise SystemExit('Unexpected build setting: '+name)
-run(['cmake','--build',str(root/'out'),'--config','Release','--target','Telegram',
-     '--parallel','1','--','/p:PreferredToolArchitecture=x64',
-     '/p:MultiProcessorCompilation=false','/nodeReuse:false'],root)
+result, exhausted = run(build_command(root, workers), root, allow_failure=True)
+if result and exhausted and workers > 1:
+    print('Explicit MSVC memory/resource failure: retrying once with original serial scheduling.', flush=True)
+    configure_workers(1)
+    result, _ = run(build_command(root, 1), root, allow_failure=True)
+if result:
+    raise SystemExit('Release build failed; no artifact is accepted. Actual redacted output is above.')
 print('Release target completed; configuration checks passed.')

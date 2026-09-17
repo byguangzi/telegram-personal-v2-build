@@ -19,6 +19,16 @@ on:
         description: Exact public dependency artifact ID from that run
         type: string
         default: ''
+      build_mode:
+        description: Compiler scheduling only (safe keeps original single process)
+        type: choice
+        options: [auto, safe]
+        default: auto
+      dependency_cache:
+        description: Revalidated dependency seeds (cold disables cache restore/save)
+        type: choice
+        options: [verified, cold]
+        default: verified
 permissions:
   contents: read
   actions: read
@@ -43,6 +53,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REQUEST_COMMIT: ${{ inputs.kit_commit }}
+          DEPENDENCY_CACHE_MODE: ${{ inputs.dependency_cache || 'verified' }}
           REQUEST_DEPENDENCY_RUN: ${{ inputs.dependency_run_id }}
           REQUEST_DEPENDENCY_ARTIFACT: ${{ inputs.dependency_artifact_id }}
         run: python3 ci/plan_build.py
@@ -131,12 +142,20 @@ jobs:
         run: |
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json & exit 0
+      - name: Compute guarded dependency cache identity
+        run: |
+          python "$env:GITHUB_WORKSPACE\ci\dependency_cache.py" keys
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency cache identity failed.' }
       - name: Restore third party cache
+        if: inputs.dependency_cache != 'cold' && env.DEPENDENCY_CACHE_ENABLED == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ env.TBUILD }}\ThirdParty
-          key: win-x64-v22-storage2-${{ env.STORAGE_KEY }}-thirdparty-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          key: ${{ env.DEPENDENCY_SEED_PREFIX }}-thirdparty-${{ env.DEPENDENCY_RECIPE_HASH }}
+          restore-keys: |
+            ${{ env.DEPENDENCY_SEED_PREFIX }}-thirdparty-
       - name: Restore library cache
+        if: inputs.dependency_cache != 'cold' && env.DEPENDENCY_CACHE_ENABLED == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
@@ -145,19 +164,32 @@ jobs:
             !${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\*
             !${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: win-x64-v22-storage2-${{ env.STORAGE_KEY }}-libs-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          key: ${{ env.DEPENDENCY_SEED_PREFIX }}-libs-${{ env.DEPENDENCY_RECIPE_HASH }}
+          restore-keys: |
+            ${{ env.DEPENDENCY_SEED_PREFIX }}-libs-
       - name: Restore Qt cache
+        if: inputs.dependency_cache != 'cold' && env.DEPENDENCY_CACHE_ENABLED == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ${{ env.LibrariesPath }}\[qQ]t[_-]*
             ${{ env.LibrariesPath }}\cache_keys\[qQ]t[_-]*
-          key: win-x64-v22-storage2-${{ env.STORAGE_KEY }}-qt-${{ env.SDK }}-${{ env.CACHE_KEY }}
+          key: ${{ env.DEPENDENCY_SEED_PREFIX }}-qt-${{ env.DEPENDENCY_RECIPE_HASH }}
+          restore-keys: |
+            ${{ env.DEPENDENCY_SEED_PREFIX }}-qt-
+      - name: Record restored dependency stage keys
+        run: |
+          python "$env:GITHUB_WORKSPACE\ci\dependency_cache.py" before
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency cache diagnostics failed.' }
       - name: Prepare official libraries with Release enabled
         shell: cmd
         run: |
           call "%TBUILD%\tdesktop\Telegram\build\prepare\win.bat" silent
           if errorlevel 1 exit /b 1
+      - name: Summarize official dependency revalidation
+        run: |
+          python "$env:GITHUB_WORKSPACE\ci\dependency_cache.py" after
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency cache diagnostics failed.' }
       - name: Package public dependencies with integrity manifest
         run: |
           python "$env:GITHUB_WORKSPACE\ci\dependencies.py" pack
@@ -300,6 +332,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Private configuration validation failed.' }
       - name: Configure and compile Release with redacted output
         env:
+          BUILD_MODE: ${{ inputs.build_mode || 'auto' }}
           TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
           TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
           PRECONFIGURED_PROXY_HOST: ${{ secrets.PRECONFIGURED_PROXY_HOST }}

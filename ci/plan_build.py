@@ -19,7 +19,9 @@ def main():
     run_id=os.environ.get('REQUEST_DEPENDENCY_RUN','')
     artifact_id=os.environ.get('REQUEST_DEPENDENCY_ARTIFACT','')
     if bool(run_id)!=bool(artifact_id): raise RuntimeError('Both dependency IDs are required together')
-    if not run_id:
+    if os.environ.get('DEPENDENCY_CACHE_MODE') == 'cold':
+        if run_id or artifact_id: raise RuntimeError('Cold mode cannot reuse a dependency artifact')
+    elif not run_id:
         artifacts=api(f'repos/{repo}/actions/artifacts?per_page=100')['artifacts']
         manifest=json.loads((ROOT/'SHA256SUMS.json').read_text())
         for item in artifacts:
