@@ -1,5 +1,5 @@
 diff --git a/Telegram/SourceFiles/apiwrap.cpp b/Telegram/SourceFiles/apiwrap.cpp
-index d4aa981bbdf00de3f565bce8808a1fa7c33d219f..bcd29165714bbe2caa51b3f539ee2ae2064f87a7 100644
+index 25bdb0c6d5438bbd376f104c88e1a2aacd54202a..f7a850899584989f3fd43f56ac9b1a2dab72dfa9 100644
 --- a/Telegram/SourceFiles/apiwrap.cpp
 +++ b/Telegram/SourceFiles/apiwrap.cpp
 @@ -6,6 +6,10 @@ For license and copyright information please follow this link:
@@ -258,7 +258,7 @@ index 4e25824b57b0afb65b2086b6d32a2e34035f8cb7..fa4ca0f1ba28a340202ec7ba0e5739f1
  
  object_ptr<Ui::BoxContent> ProxiesBoxController::create(
 diff --git a/Telegram/SourceFiles/core/application.cpp b/Telegram/SourceFiles/core/application.cpp
-index acfdcfdfb1743255ee0669c85ff1fe02f1ded2f5..766e4f028b82b75cf6fa391871c8ebb630ab8a1c 100644
+index d1cf3cdc395c1aedc2d06a2d6a866b18946fc106..d6a18465c1a6dcbdec2d01146c48e11c3927490d 100644
 --- a/Telegram/SourceFiles/core/application.cpp
 +++ b/Telegram/SourceFiles/core/application.cpp
 @@ -894,16 +894,21 @@ void Application::constructFallbackProductionConfig(
@@ -833,7 +833,7 @@ index e6225f531e8942aed6b7c3acc6b7a28028717062..5fc647f067e3771e50bd0863c4978d61
  		return;
  	}
 diff --git a/Telegram/SourceFiles/logs.cpp b/Telegram/SourceFiles/logs.cpp
-index 451ee22c87d5dd723dbcc141f792dde39740c231..07316d71127fb54c554089ae1a7c3605d4a403ed 100644
+index 6637709df7cfdbd1af5d3f3936e8f0275b0f2a2c..66678a6d4ed691ee0a7436dcf55b7b8519aff98a 100644
 --- a/Telegram/SourceFiles/logs.cpp
 +++ b/Telegram/SourceFiles/logs.cpp
 @@ -50,7 +50,7 @@ QMutex *_logsMutex(LogDataType type, bool clear = false) {
@@ -939,7 +939,7 @@ index 3940a64322f4a754cc5625c42d28205ee39610c1..6cf48c86b0554c3894fc31cd4b438618
  	base::flat_map<PeerId, qint32> _subsectionTabsModes;
  	base::flat_map<Data::DefaultNotify, ushort> _ringtoneDefaultVolumes;
 diff --git a/Telegram/SourceFiles/window/notifications_manager.cpp b/Telegram/SourceFiles/window/notifications_manager.cpp
-index 25de977db87b73719163ab9ed4f5017cf51a74a1..194d919e064705f843f28a38bc03b0e0cc2af70a 100644
+index e5b9eb949e180667952172d338cbcf3e552798d8..886b4132c86b1e8cc75d29305c5f2c0d14651d8a 100644
 --- a/Telegram/SourceFiles/window/notifications_manager.cpp
 +++ b/Telegram/SourceFiles/window/notifications_manager.cpp
 @@ -161,6 +161,9 @@ base::options::toggle HideReplyButtonOption({
@@ -1021,7 +1021,7 @@ index ba50aef7f530d023120672d65df3146e8b59712f..434d146ebb0d6d68f8997fcf7b75c78e
  
  	addClickHandler([=] {
 diff --git a/Telegram/SourceFiles/window/window_peer_menu.cpp b/Telegram/SourceFiles/window/window_peer_menu.cpp
-index a96e476eea36de3241bec1a6e7422179ed8f0a75..124552ed21ec41752d163509f3142beef0774680 100644
+index 9ab1453e8e831dabbbf793811bd043bedcaeeb11..18402ed9e40d2485f0835211b7801594d54b67d3 100644
 --- a/Telegram/SourceFiles/window/window_peer_menu.cpp
 +++ b/Telegram/SourceFiles/window/window_peer_menu.cpp
 @@ -837,12 +837,16 @@ void Filler::addToggleArchive() {
