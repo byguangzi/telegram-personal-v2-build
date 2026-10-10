@@ -98,8 +98,8 @@ jobs:
       - name: Verify pinned source and apply V2.2 patch
         run: |
           & "$env:GITHUB_WORKSPACE\scripts\verify-kit.ps1" -Cloud -Source "$env:TBUILD\tdesktop" | Out-Null
-          $version = Get-Content "$env:TBUILD\tdesktop\Telegram\SourceFiles\core\version.h" -Raw
-          if (-not $version.Contains(('AppVersionStr = "' + $env:SOURCE_VERSION + '"'))) { throw 'Version mismatch.' }
+          python "$env:GITHUB_WORKSPACE\ci\follow_upstream.py" --verify-source "$env:TBUILD\tdesktop" --version "$env:SOURCE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Official version verification failed.' }
           python -m unittest discover -s "$env:GITHUB_WORKSPACE\tests" -p test_*.py
           if ($LASTEXITCODE -ne 0) { throw 'Secret parser regression tests failed.' }
       - name: Prepare official build metadata
@@ -272,8 +272,8 @@ jobs:
       - name: Verify pinned source and apply V2.2 patch
         run: |
           & "$env:GITHUB_WORKSPACE\scripts\verify-kit.ps1" -Cloud -Source "$env:TBUILD\tdesktop" | Out-Null
-          $version = Get-Content "$env:TBUILD\tdesktop\Telegram\SourceFiles\core\version.h" -Raw
-          if (-not $version.Contains(('AppVersionStr = "' + $env:SOURCE_VERSION + '"'))) { throw 'Version mismatch.' }
+          python "$env:GITHUB_WORKSPACE\ci\follow_upstream.py" --verify-source "$env:TBUILD\tdesktop" --version "$env:SOURCE_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Official version verification failed.' }
           python -m unittest discover -s "$env:GITHUB_WORKSPACE\tests" -p test_*.py
           if ($LASTEXITCODE -ne 0) { throw 'Secret parser regression tests failed.' }
       - name: Prepare official build metadata

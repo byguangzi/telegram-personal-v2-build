@@ -20,12 +20,35 @@ def version_tuple(value):
     if not re.fullmatch(r'\d+\.\d+\.\d+',value): raise ValueError('Not a stable version')
     return tuple(map(int,value.split('.')))
 
+def verify_version_header(header, version):
+    """Require matching stable display AND numeric versions; 7.3 == 7.3.0."""
+    expected = version_tuple(version)
+    if any(part >= 1000 for part in expected[1:]):
+        raise ValueError('Invalid minor/patch version')
+    def field(name, pattern):
+        values = re.findall(r'^\s*constexpr\s+auto\s+' + name
+                            + r'\s*=\s*' + pattern + r'\s*;', header, re.M)
+        if len(values) != 1:
+            raise RuntimeError('Missing or ambiguous official version field: ' + name)
+        return values[0]
+    display = field('AppVersionStr', r'"([0-9]+\.[0-9]+(?:\.[0-9]+)?)"')
+    parts = tuple(map(int, display.split('.')))
+    normalized = parts + (0,) if len(parts) == 2 else parts
+    number = int(field('AppVersion', r'([0-9]+)'))
+    beta = field('AppBetaVersion', r'(true|false)')
+    expected_number = expected[0] * 1000000 + expected[1] * 1000 + expected[2]
+    if normalized != expected or number != expected_number or beta != 'false':
+        raise RuntimeError('Official version mismatch: expected ' + version
+                           + ', display=' + display + ', number=' + str(number)
+                           + ', beta=' + beta)
+    return display
+
 def upgrade(source,commit,version):
     config=json.loads((ROOT/'kit.json').read_text(encoding='utf-8-sig'))
     if version_tuple(version)<=version_tuple(config['source_version']): return False
     if git(source,'rev-parse','HEAD').decode().strip()!=commit: raise RuntimeError('Source pin mismatch')
     header=(source/'Telegram/SourceFiles/core/version.h').read_text()
-    if f'AppVersionStr = "{version}"' not in header: raise RuntimeError('Official version mismatch')
+    verify_version_header(header, version)
     patch=ROOT/config['patch_file']
     git(source,'apply','--check','--whitespace=error',str(patch))
     git(source,'apply','--whitespace=error',str(patch))
@@ -84,4 +107,19 @@ def main():
         {'ref':branch,'inputs':{'request_id':'auto-'+uuid.uuid4().hex,'kit_commit':commit}})
     print('Candidate build dispatched for '+tag+' at '+commit)
 
-if __name__=='__main__': main()
+if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--verify-source', type=pathlib.Path)
+    parser.add_argument('--version')
+    args = parser.parse_args()
+    if args.verify_source is not None:
+        if not args.version:
+            parser.error('--version is required with --verify-source')
+        header = (args.verify_source / 'Telegram/SourceFiles/core/version.h').read_text()
+        display = verify_version_header(header, args.version)
+        print('Official stable version verified: ' + args.version + ' (display ' + display + ')')
+    elif args.version:
+        parser.error('--version requires --verify-source')
+    else:
+        main()

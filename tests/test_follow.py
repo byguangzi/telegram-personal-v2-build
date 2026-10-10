@@ -26,7 +26,7 @@ class UpgradeTests(unittest.TestCase):
             git('init','-q');git('config','user.email','test@localhost');git('config','user.name','Test')
             git('config','core.safecrlf','false')
             version=source/'Telegram/SourceFiles/core/version.h';version.parent.mkdir(parents=True)
-            version.write_text('AppVersionStr = "7.2.8"\n',newline='\n')
+            version.write_text('constexpr auto AppVersion = 7002008;\nconstexpr auto AppVersionStr = "7.2.8";\nconstexpr auto AppBetaVersion = false;\n',newline='\n')
             f=source/'feature.cpp';f.write_text('one\ntwo\nthree\n',newline='\n')
             git('add','.');git('-c','commit.gpgsign=false','commit','-qm','baseline')
             f.write_text('one\npersonal\nthree\n',newline='\n')
@@ -36,7 +36,7 @@ class UpgradeTests(unittest.TestCase):
                  'changed_files':['feature.cpp'],'baseline_blobs':{'feature.cpp':'old'}}
             (kit/'kit.json').write_text(json.dumps(cfg));(kit/'personal.patch').write_bytes(patch)
             (kit/'SHA256SUMS.json').write_text('{}')
-            version.write_text('AppVersionStr = "7.2.9"\n',newline='\n');git('add','.');git('-c','commit.gpgsign=false','commit','-qm','upgrade')
+            version.write_text('constexpr auto AppVersion = 7002009;\nconstexpr auto AppVersionStr = "7.2.9";\nconstexpr auto AppBetaVersion = false;\n',newline='\n');git('add','.');git('-c','commit.gpgsign=false','commit','-qm','upgrade')
             sha=git('rev-parse','HEAD').decode().strip()
             follow.ROOT=kit
             try:
@@ -44,12 +44,42 @@ class UpgradeTests(unittest.TestCase):
                 self.assertIn('personal',f.read_text())
                 manifest=json.loads((kit/'SHA256SUMS.json').read_text())
                 self.assertEqual(manifest['personal.patch'],hashlib.sha256((kit/'personal.patch').read_bytes()).hexdigest())
-                version.write_text('AppVersionStr = "7.2.10"\n',newline='\n');f.write_text('incompatible\n',newline='\n')
+                version.write_text('constexpr auto AppVersion = 7002010;\nconstexpr auto AppVersionStr = "7.2.10";\nconstexpr auto AppBetaVersion = false;\n',newline='\n');f.write_text('incompatible\n',newline='\n')
                 git('add','.');git('-c','commit.gpgsign=false','commit','-qm','conflict')
                 before=(kit/'kit.json').read_bytes()
                 with self.assertRaises(subprocess.CalledProcessError):
                     follow.upgrade(source,git('rev-parse','HEAD').decode().strip(),'7.2.10')
                 self.assertEqual(before,(kit/'kit.json').read_bytes())
             finally:follow.ROOT=original_root
+
+class VersionHeaderTests(unittest.TestCase):
+    def header(self, display='7.3', number=7003000, beta='false'):
+        return (f'constexpr auto AppVersion = {number};\n'
+                f'constexpr auto AppVersionStr = "{display}";\n'
+                f'constexpr auto AppBetaVersion = {beta};\n')
+
+    def test_zero_patch_display(self):
+        self.assertEqual(follow.verify_version_header(self.header(), '7.3.0'), '7.3')
+
+    def test_three_component_display(self):
+        self.assertEqual(follow.verify_version_header(self.header('7.3.0'), '7.3.0'), '7.3.0')
+
+    def test_nonzero_patch(self):
+        self.assertEqual(follow.verify_version_header(self.header('7.2.9', 7002009), '7.2.9'), '7.2.9')
+
+    def test_wrong_numeric_or_display_or_beta_rejected(self):
+        for header in (self.header('7.3', 7003001), self.header('7.2.9'),
+                       self.header(beta='true'), self.header('7.3.1'),
+                       self.header('7.3-beta'), self.header() + 'constexpr auto AppVersion = 7003000;'):
+            with self.subTest(header=header):
+                with self.assertRaises(RuntimeError): follow.verify_version_header(header, '7.3.0')
+
+    def test_missing_fields_rejected(self):
+        for header in ('', 'AppVersionStr = "7.3";', self.header().replace('constexpr auto AppBetaVersion = false;', '')):
+            with self.assertRaises(RuntimeError): follow.verify_version_header(header, '7.3.0')
+
+    def test_bad_expected_version_rejected(self):
+        for version in ('7.3', 'v7.3.0', '7.3.0-beta', '7.3.0\n', '7.1000.0'):
+            with self.assertRaises(ValueError): follow.verify_version_header(self.header(), version)
 
 if __name__=='__main__':unittest.main()
