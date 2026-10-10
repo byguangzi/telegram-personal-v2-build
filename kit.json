@@ -1,8 +1,8 @@
 {
   "version": "2.2",
-  "source_version": "7.3.0",
-  "source_commit": "42f8a36d43b8c805bc821905bea4cfeb3af1d41d",
-  "source_tree": "6ac9bbc1b44edcb119b1a724e7b0a321c3b7b8fa",
+  "source_version": "7.3.1",
+  "source_commit": "6fed91ffab9861771a75f29df65031b3c80b6941",
+  "source_tree": "4cf9e0e1830ff8569e3264d07062d8ff94dbb4f6",
   "repository": "byguangzi/telegram-personal-v2-build",
   "workflow": "build-v22.yml",
   "artifact": "Telegram-Personal-v2.2",
