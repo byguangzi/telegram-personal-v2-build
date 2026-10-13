@@ -8,6 +8,20 @@ import tarfile
 
 ROOTS = ('Libraries', 'ThirdParty')
 
+class PublicDependencyTarFile(tarfile.TarFile):
+    def add(self, name, arcname=None, recursive=True, *, filter=None):
+        # MSYS2's /etc/mtab points to /proc/mounts: a host runtime view,
+        # not a portable build dependency. Cached Windows reparse points can
+        # raise WinError 1920 in gettarinfo(), BEFORE the normal tar filter.
+        # Exclude only this exact member, before any metadata/content access.
+        # Keep all other I/O errors and the existing public-root checks fatal.
+        if (arcname is not None and
+                PurePosixPath(str(arcname).replace('\\', '/')).parts ==
+                ('ThirdParty', 'msys64', 'etc', 'mtab')):
+            print('Skipping host-specific MSYS2 mount table: ' + str(arcname))
+            return
+        return super().add(name, arcname=arcname, recursive=recursive, filter=filter)
+
 def sha256(path):
     with Path(path).open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
@@ -45,7 +59,7 @@ def pack(root, output, meta):
         count += 1
         return info
     # Store linked files as bytes, independent of Windows symlink privileges on restore.
-    with tarfile.open(archive, 'w:gz', compresslevel=1, dereference=True) as tar:
+    with PublicDependencyTarFile.open(archive, 'w:gz', compresslevel=1, dereference=True) as tar:
         for name in ROOTS:
             tar.add(root / name, arcname=name, filter=public_only)
     manifest = {'format': 1, 'identity': meta, 'sha256': sha256(archive),
