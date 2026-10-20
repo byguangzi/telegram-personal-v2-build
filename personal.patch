@@ -1,5 +1,5 @@
 diff --git a/Telegram/SourceFiles/apiwrap.cpp b/Telegram/SourceFiles/apiwrap.cpp
-index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96e6c4d735 100644
+index 896a63046329db39c838f16387ccd7430a3d8702..eee77541bd5d4746826f79eff3a92565b7f1a725 100644
 --- a/Telegram/SourceFiles/apiwrap.cpp
 +++ b/Telegram/SourceFiles/apiwrap.cpp
 @@ -6,6 +6,10 @@ For license and copyright information please follow this link:
@@ -13,7 +13,7 @@ index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96
  
  #include "api/api_authorizations.h"
  #include "api/api_attached_stickers.h"
-@@ -199,6 +203,7 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
+@@ -200,6 +204,7 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
  , _session(session)
  , _messageDataResolveDelayed([=] { resolveMessageDatas(); })
  , _webPagesTimer([=] { resolveWebPages(); })
@@ -21,7 +21,7 @@ index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96
  , _draftsSaveTimer([=] { saveDraftsToCloud(); })
  , _featuredSetsReadTimer([=] { readFeaturedSets(); })
  , _dialogsLoadState(std::make_unique<DialogsLoadState>())
-@@ -246,6 +251,8 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
+@@ -248,6 +253,8 @@ ApiWrap::ApiWrap(not_null<Main::Session*> session)
  
  		_reactionsNotifySettings->reload();
  		setupSupportMode();
@@ -30,7 +30,7 @@ index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96
  	});
  }
  
-@@ -478,7 +485,109 @@ void ApiWrap::savePinnedOrder(not_null<Data::SavedMessages*> saved) {
+@@ -480,7 +487,109 @@ void ApiWrap::savePinnedOrder(not_null<Data::SavedMessages*> saved) {
  	)).send();
  }
  
@@ -140,7 +140,7 @@ index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96
  		not_null<History*> history,
  		bool archived,
  		Fn<void()> callback) {
-@@ -506,8 +615,16 @@ void ApiWrap::toggleHistoryArchived(
+@@ -508,8 +617,16 @@ void ApiWrap::toggleHistoryArchived(
  		if (isPinned) {
  			_session->data().notifyPinnedDialogsOrderUpdated();
  		}
@@ -159,7 +159,7 @@ index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96
  	}).send();
  	_historyArchivedRequests.emplace(history, requestId, callback);
  }
-@@ -924,7 +1041,7 @@ void ApiWrap::requestMoreDialogs(Data::Folder *folder) {
+@@ -926,7 +1043,7 @@ void ApiWrap::requestMoreDialogs(Data::Folder *folder) {
  		return;
  	} else if (state->requestId) {
  		return;
@@ -168,7 +168,7 @@ index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96
  		return;
  	}
  
-@@ -980,6 +1097,7 @@ void ApiWrap::requestMoreDialogs(Data::Folder *folder) {
+@@ -982,6 +1099,7 @@ void ApiWrap::requestMoreDialogs(Data::Folder *folder) {
  		}
  		requestMoreDialogsIfNeeded();
  		_session->data().chatsListChanged(folder);
@@ -176,7 +176,7 @@ index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96
  	}).fail([=] {
  		dialogsLoadState(folder)->requestId = 0;
  	}).send();
-@@ -1016,9 +1134,8 @@ void ApiWrap::requestMoreDialogsIfNeeded() {
+@@ -1018,9 +1136,8 @@ void ApiWrap::requestMoreDialogsIfNeeded() {
  		requestDialogs(nullptr);
  	} else if (const auto folder = _session->data().folderLoaded(
  			Data::Folder::kId)) {
@@ -189,7 +189,7 @@ index 23afed56f5eb58cc351e76fad4e37b6b4474a869..1b8d66dd950cdb6aac7f996af9dbfe96
  	requestContacts();
  	_session->data().shortcutMessages().preloadShortcuts();
 diff --git a/Telegram/SourceFiles/apiwrap.h b/Telegram/SourceFiles/apiwrap.h
-index ccd824b885203fc639e2216646f5772e96128a52..f21be73aa5a48b030e919f9a5a64e2028b522cc3 100644
+index ed870e4a57e6b363b3c13fd9d77bb760a03e40fe..46224d7bb0bdb89e15dc09dee53000eae8878157 100644
 --- a/Telegram/SourceFiles/apiwrap.h
 +++ b/Telegram/SourceFiles/apiwrap.h
 @@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
@@ -200,7 +200,7 @@ index ccd824b885203fc639e2216646f5772e96128a52..f21be73aa5a48b030e919f9a5a64e202
  #include "base/timer.h"
  #include "mtproto/sender.h"
  #include "data/stickers/data_stickers_set.h"
-@@ -151,6 +152,10 @@ public:
+@@ -152,6 +153,10 @@ public:
  
  	explicit ApiWrap(not_null<Main::Session*> session);
  	~ApiWrap();
@@ -211,7 +211,7 @@ index ccd824b885203fc639e2216646f5772e96128a52..f21be73aa5a48b030e919f9a5a64e202
  
  	[[nodiscard]] Main::Session &session() const;
  	[[nodiscard]] Storage::Account &local() const;
-@@ -489,6 +494,12 @@ public:
+@@ -491,6 +496,12 @@ public:
  		PeerId fromPeerId);
  
  private:
@@ -224,7 +224,7 @@ index ccd824b885203fc639e2216646f5772e96128a52..f21be73aa5a48b030e919f9a5a64e202
  	struct MessageDataRequest {
  		using Callbacks = std::vector<Fn<void()>>;
  
-@@ -689,6 +700,14 @@ private:
+@@ -691,6 +702,14 @@ private:
  
  	base::flat_map<not_null<WebPageData*>, mtpRequestId> _webPagesPending;
  	base::Timer _webPagesTimer;
@@ -240,7 +240,7 @@ index ccd824b885203fc639e2216646f5772e96128a52..f21be73aa5a48b030e919f9a5a64e202
  	struct StickerSetRequest {
  		uint64 accessHash = 0;
 diff --git a/Telegram/SourceFiles/boxes/connection_box.cpp b/Telegram/SourceFiles/boxes/connection_box.cpp
-index 65f5c5dc25a725fc2aa3ebcdb2017c1d5ffe3cad..0b1b53a2aea7dd7830d33ed5e10bd0671a013776 100644
+index e9fa8a1d8f727042e4cadd632182eee5259f80c2..b447d843cddab444132462f88def100169e8e9f3 100644
 --- a/Telegram/SourceFiles/boxes/connection_box.cpp
 +++ b/Telegram/SourceFiles/boxes/connection_box.cpp
 @@ -2214,10 +2214,9 @@ void ProxiesBoxController::refreshChecker(Item &item) {
@@ -258,10 +258,10 @@ index 65f5c5dc25a725fc2aa3ebcdb2017c1d5ffe3cad..0b1b53a2aea7dd7830d33ed5e10bd067
  
  object_ptr<Ui::BoxContent> ProxiesBoxController::create(
 diff --git a/Telegram/SourceFiles/core/application.cpp b/Telegram/SourceFiles/core/application.cpp
-index 7a309ac8431993314ee022ab02551935b061f7b5..c432d5d65439f8d53ab1c8dcf43a720ba9794553 100644
+index 7172206f5c1e540e19c90798e9a9e5721276cc53..c0321492ca7251db9d3c65b164d44300245d8897 100644
 --- a/Telegram/SourceFiles/core/application.cpp
 +++ b/Telegram/SourceFiles/core/application.cpp
-@@ -896,16 +896,21 @@ void Application::constructFallbackProductionConfig(
+@@ -907,16 +907,21 @@ void Application::constructFallbackProductionConfig(
  void Application::setCurrentProxy(
  		const MTP::ProxyData &proxy,
  		MTP::ProxyData::Settings settings) {
@@ -292,7 +292,7 @@ index 7a309ac8431993314ee022ab02551935b061f7b5..c432d5d65439f8d53ab1c8dcf43a720b
  	my.connectionTypeChangesNotify();
  	proxyRotationSettingsChanged();
  }
-@@ -925,19 +930,7 @@ auto Application::proxyChanges() const -> rpl::producer<ProxyChange> {
+@@ -936,19 +941,7 @@ auto Application::proxyChanges() const -> rpl::producer<ProxyChange> {
  }
  
  void Application::badMtprotoConfigurationError() {
@@ -314,7 +314,7 @@ index 7a309ac8431993314ee022ab02551935b061f7b5..c432d5d65439f8d53ab1c8dcf43a720b
  
  void Application::startLocalStorage() {
 diff --git a/Telegram/SourceFiles/core/application.h b/Telegram/SourceFiles/core/application.h
-index e92e068100ef806da5c26d38ba08c162084f9cf6..c147b8acd4f89958c9eeab439cc3d477399b7f33 100644
+index c66a1bb525151c263412ce0767c53229b538cbe4..200f7045d5cdaf8c1b774eaeda432c0efc5c46cf 100644
 --- a/Telegram/SourceFiles/core/application.h
 +++ b/Telegram/SourceFiles/core/application.h
 @@ -235,6 +235,7 @@ public:
@@ -806,10 +806,10 @@ index c1fee276961c4f98e21ab2a8e495a1d687672804..335615f8d08421f179862ff16f0f6c7f
  	base::Timer _switchTimer;
  	std::vector<Entry> _entries;
 diff --git a/Telegram/SourceFiles/history/history.cpp b/Telegram/SourceFiles/history/history.cpp
-index 0f5468f074f7eac88e58b00dc6fabbd2a0369170..b3f241d89a447d1cb5ddaa44f6c3444f193bd07d 100644
+index 5fc987f84b69e8e347ad6d59d82fdf77c613e923..e9182fd151d24281091b8f60c75a59138084751b 100644
 --- a/Telegram/SourceFiles/history/history.cpp
 +++ b/Telegram/SourceFiles/history/history.cpp
-@@ -2523,6 +2523,10 @@ void History::clearFolder() {
+@@ -2514,6 +2514,10 @@ void History::clearFolder() {
  }
  
  void History::setFolderPointer(Data::Folder *folder) {
@@ -820,7 +820,7 @@ index 0f5468f074f7eac88e58b00dc6fabbd2a0369170..b3f241d89a447d1cb5ddaa44f6c3444f
  	if (_folder == folder) {
  		return;
  	}
-@@ -3152,6 +3156,11 @@ void History::setLastServerMessage(HistoryItem *item) {
+@@ -3139,6 +3143,11 @@ void History::setLastServerMessage(HistoryItem *item) {
  }
  
  void History::setLastMessage(HistoryItem *item) {
