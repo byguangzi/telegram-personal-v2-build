@@ -1,5 +1,5 @@
 diff --git a/Telegram/SourceFiles/apiwrap.cpp b/Telegram/SourceFiles/apiwrap.cpp
-index 896a63046329db39c838f16387ccd7430a3d8702..eee77541bd5d4746826f79eff3a92565b7f1a725 100644
+index 342e501177996be3c083ba7985d3720a53100b51..1ec56a9214306ba899c54ad6a6009e1aa1d3a5d1 100644
 --- a/Telegram/SourceFiles/apiwrap.cpp
 +++ b/Telegram/SourceFiles/apiwrap.cpp
 @@ -6,6 +6,10 @@ For license and copyright information please follow this link:
@@ -494,10 +494,10 @@ index 1f2ec5c516e03ae49e80c15bb6083bffa7ec6d99..b53a50431708f077aeb010468e51133b
  	bool _useProxyForCalls = false;
  	bool _proxyRotationEnabled = false;
 diff --git a/Telegram/SourceFiles/core/launcher.cpp b/Telegram/SourceFiles/core/launcher.cpp
-index b3b76e088fb5ded83299fe1ae47c5ee5dd7e1a62..088c6c63c478f45a419f9d3f75af3047070329da 100644
+index 3e436f7087c3408cf06921031769eb27830a59af..6470472be7f17ed3fd0029e00fa640f38f9d6a01 100644
 --- a/Telegram/SourceFiles/core/launcher.cpp
 +++ b/Telegram/SourceFiles/core/launcher.cpp
-@@ -238,7 +238,7 @@ bool MoveLegacyAlphaFolder(const QString &folder, const QString &file) {
+@@ -241,7 +241,7 @@ bool MoveLegacyAlphaFolder(const QString &folder, const QString &file) {
  	return true;
  }
  
@@ -506,7 +506,7 @@ index b3b76e088fb5ded83299fe1ae47c5ee5dd7e1a62..088c6c63c478f45a419f9d3f75af3047
  	if (!MoveLegacyAlphaFolder(u"TelegramAlpha_data"_q, u"alpha"_q)
  		|| !MoveLegacyAlphaFolder(u"TelegramBeta_data"_q, u"beta"_q)) {
  		return false;
-@@ -247,58 +247,8 @@ bool MoveLegacyAlphaFolder() {
+@@ -250,58 +250,8 @@ bool MoveLegacyAlphaFolder() {
  }
  
  bool CheckPortableVersionFolder() {
@@ -567,7 +567,7 @@ index b3b76e088fb5ded83299fe1ae47c5ee5dd7e1a62..088c6c63c478f45a419f9d3f75af3047
  }
  
  base::options::toggle OptionFractionalScalingEnabled({
-@@ -444,14 +394,8 @@ int Launcher::exec() {
+@@ -447,14 +397,8 @@ int Launcher::exec() {
  }
  
  bool Launcher::validateCustomWorkingDir() {
@@ -806,10 +806,10 @@ index c1fee276961c4f98e21ab2a8e495a1d687672804..335615f8d08421f179862ff16f0f6c7f
  	base::Timer _switchTimer;
  	std::vector<Entry> _entries;
 diff --git a/Telegram/SourceFiles/history/history.cpp b/Telegram/SourceFiles/history/history.cpp
-index 5fc987f84b69e8e347ad6d59d82fdf77c613e923..e9182fd151d24281091b8f60c75a59138084751b 100644
+index 27c0d3c3f9f8668a497c5ab638135972380bfd6b..33a0d77331013d48f11e3035a3cc9e23dd351c8c 100644
 --- a/Telegram/SourceFiles/history/history.cpp
 +++ b/Telegram/SourceFiles/history/history.cpp
-@@ -2514,6 +2514,10 @@ void History::clearFolder() {
+@@ -2524,6 +2524,10 @@ void History::clearFolder() {
  }
  
  void History::setFolderPointer(Data::Folder *folder) {
@@ -820,7 +820,7 @@ index 5fc987f84b69e8e347ad6d59d82fdf77c613e923..e9182fd151d24281091b8f60c75a5913
  	if (_folder == folder) {
  		return;
  	}
-@@ -3139,6 +3143,11 @@ void History::setLastServerMessage(HistoryItem *item) {
+@@ -3149,6 +3153,11 @@ void History::setLastServerMessage(HistoryItem *item) {
  }
  
  void History::setLastMessage(HistoryItem *item) {
@@ -1021,7 +1021,7 @@ index ba50aef7f530d023120672d65df3146e8b59712f..434d146ebb0d6d68f8997fcf7b75c78e
  
  	addClickHandler([=] {
 diff --git a/Telegram/SourceFiles/window/window_peer_menu.cpp b/Telegram/SourceFiles/window/window_peer_menu.cpp
-index 56d2e563306262b9d1a7a939a99a9ac861185cc5..9c9adc2cd8d16b1dd66b44b8f7416534c022c69a 100644
+index 864a8103df594c634cb1017c7bf2733da13885f2..fad3180e0f7f40de49d540aca38d379ef663c15e 100644
 --- a/Telegram/SourceFiles/window/window_peer_menu.cpp
 +++ b/Telegram/SourceFiles/window/window_peer_menu.cpp
 @@ -840,12 +840,16 @@ void Filler::addToggleArchive() {
